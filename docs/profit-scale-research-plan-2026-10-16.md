@@ -95,7 +95,12 @@ second factor without the first multiplies losses by the same ratio — which is
   checks that each window's first bar SPANS the entry — bar timestamps are opens, so `bars[0].t <= opened_at <
   bars[0].t + tf` (no later tolerance: a first bar one or two intervals after the entry can hide a stop or target in
   the gap; Codex round 8) — and either
-  re-fetches the row from the entry or excludes it, counted as `clipped`, before any rule is scored.
+  re-fetches the row from the entry or excludes it, counted as `clipped`, before any rule is scored. **The entry bar
+  itself is invisible to the replay** (Codex round 9, P1): `replayExit()` (`agent/lib/exit-replay.js:209–217`) skips
+  every bar with `t < opened_at`, so for a mid-bar entry the interval from the fill to the next bar's open is never
+  replayed and an immediate stop or target there is missed. Before any rule is selected, a trade whose stop or target
+  lies inside the containing bar's range (`bars[0].l..h`) is marked `entry_bar_unresolved` and excluded from the
+  comparison, or the replay is fed finer post-entry data (the tick spill where one exists for the symbol and span).
 - **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`, called with `?stop=initial`:
   the broker's first-held stop, `broker_sl_initial`, the denominator `realised_rr` uses; the route's default
   `stop=recorded` maps through `exit-counterfactual-extended.js stopOf()` to the proposal's `sl_price`, which after a
@@ -214,10 +219,10 @@ second factor without the first multiplies losses by the same ratio — which is
 
 | rule | metric | source of the bar | live check |
 |---|---|---|---|
-| No trade without qualifying evidence | entries whose cell fails the evidence gate | § 14,730 objective; the live gate's own configuration (`/state/evidence-gate`); tick-validation.json for tick cells | zero such entries per week in the decision log |
+| No trade without qualifying evidence | entries whose cell fails the COMBINATION of the strategy × account evidence-gate verdict and the class-routing class/side verdict (`/state/class-routing` routed rows) — the gate alone holds no per-cell failure (Codex round 9) | § 14,730 objective; the live gate's own configuration (`/state/evidence-gate`); tick-validation.json for tick cells | zero such entries per week in the decision log |
 | Initial-stop losses are a measured share, not a surprise | closes at ≤ −0.9R ÷ closes | step 3's cut (today 22 %) | weekly share within the measured band; a rise names the cell |
 | Longs and shorts are judged apart | PF by side per cell | № 10,884 measured longs PF 0.47 vs shorts 1.77 — re-measured in step 1 | a side below 1.0 PF at n ≥ 30 is routed out |
-| Losses are capped before they compound | daily loss cap hits; equity stop | `dailyLossLimit`, `equityStopPct` (owner's numbers) | cap honoured on every account; each hit logged with its trades |
+| Losses are capped before they compound | daily loss cap hits; equity stop | each account's effective risk config (`GET /state/risk-config?account=`) through `pacedDailyCap` with its tier and floor inputs — not the flat `dailyLossLimit` field, which the tier rule removes from the calculation (Codex round 9); `equityStopPct` (owner's numbers) | cap honoured on every account; each hit logged with its trades |
 | Size follows evidence, never the other way | risk unit per account vs the cell's lower bound | step 6 | risk per trade reads the configured unit; no override without a record |
 | Adopted and manual trades are the owner's | ownership by `origin` (`cleanBotOrigin`) in every report; `source` kept as a reporting dimension only (the reconciler can stamp an adopted position `autopilot`; Codex round 8) | step 1 | reports show own/adopted/manual apart by origin |
 | Every exclusion is a record | routed-out and vetoed candidates per day | class-routing view; decision log | counts present; zero unexplained skips |
