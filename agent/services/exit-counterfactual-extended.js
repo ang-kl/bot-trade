@@ -191,7 +191,10 @@ export function exitCounterfactualExtended(db, {
   // plan stop (research plan step 2). A window that does not span the fill
   // (clipped at capture) is excluded and counted for every rule.
   const coverage = { no_initial_stop: 0, clipped: 0 }
-  if (stop === 'initial') eligible = eligible.filter(({ row }) => (num(row.broker_sl_initial) != null ? true : (coverage.no_initial_stop++, false)))
+  // Codex round 1 on #1394: 0 or a stop on the wrong side of the entry is no
+  // initial stop at all (realisedRR treats zero the same way) — count it.
+  const validInitial = row => { const sl = num(row.broker_sl_initial), e = num(row.entry_price); if (!(sl > 0) || e == null) return false; const s = String(row.side || '').toLowerCase(); return s === 'buy' || s === 'long' ? sl < e : s === 'sell' || s === 'short' ? sl > e : false }
+  if (stop === 'initial') eligible = eligible.filter(({ row }) => (validInitial(row) ? true : (coverage.no_initial_stop++, false)))
   eligible = eligible.filter(({ row, bars }) => (entryBarCoverage(bars, { side: row.side, entry: row.entry_price, sl: stop === 'initial' ? num(row.broker_sl_initial) : num(row.sl_price), openedAtMs: ms(row.opened_at) }).status === 'clipped' ? (coverage.clipped++, false) : true))
   const rows = eligible.map(e => e.row)
   const dz = design ? designTargets(db, rows) : null

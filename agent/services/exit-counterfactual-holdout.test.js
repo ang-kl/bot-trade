@@ -52,7 +52,7 @@ test('groupings: class from the broker tree, side and source', () => {
   const db = fresh()
   _resetAssetClassesForTests()
   primeAssetClasses({ builtAt: 'x', classes: [{ name: 'Indices (Spot)', categories: [{ name: 'Asia', symbols: ['JPN225'] }] }, { name: 'Forex (Spot)', categories: [{ name: 'Majors', symbols: ['EURUSD'] }] }] })
-  trade(db, { at: T0 }); trade(db, { at: T0 + DAY, symbol: 'EURUSD', side: 'short', origin: 'bot_pending_fill' })
+  trade(db, { at: T0 }); trade(db, { at: T0 + DAY, symbol: 'EURUSD', side: 'short', initial: 101, origin: 'bot_pending_fill' })
   const byClass = exitCounterfactualExtended(db, { minSample: 1, groupBy: 'class' })
   assert.deepEqual(Object.keys(byClass.groups.values).sort(), ['fx', 'index'])
   assert.deepEqual(Object.keys(exitCounterfactualExtended(db, { minSample: 1, groupBy: 'side' }).groups.values).sort(), ['long', 'short'])
@@ -92,4 +92,11 @@ test('entryBarCoverage / barIntervalMs: the unit cases', () => {
   assert.equal(entryBarCoverage(b, { ...long, sl: 99, openedAtMs: 30_000 }).status, 'ok')
   assert.equal(entryBarCoverage(b, { ...long, sl: 99, openedAtMs: 30_000 }, { tpR: 0.5 }).status, 'entry_bar_unresolved', "the rule's own target 100.5 is inside the bar")
   assert.equal(entryBarCoverage(b, { ...long, openedAtMs: -1 }).status, 'clipped')
+})
+
+test('a zero or wrong-side initial stop is no initial stop: excluded and counted (Codex round 1 on #1394)', () => {
+  const db = fresh()
+  trade(db, { at: T0 }); trade(db, { at: T0 + DAY, initial: 0 }); trade(db, { at: T0 + 2 * DAY, initial: 101 })
+  const r = exitCounterfactualExtended(db, { minSample: 1 })
+  assert.equal(r.coverage.no_initial_stop, 2); assert.equal(r.eligible, 1)
 })
