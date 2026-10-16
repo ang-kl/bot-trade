@@ -79,16 +79,24 @@ test('SEED-ONCE: a later disarm is NOT undone at the next boot', () => {
   assert.equal(armedTradeKeys(db, getState, null).has('tsmom_long'), false, 'stays off')
 })
 
-test('a strategy already armed is reported present and is NOT marked seeded', () => {
+test('a strategy already armed is reported present AND the order is consumed, so a later guard disarm is not undone at the next boot (Codex round 2 on #1392)', () => {
+  // Claude · № 15,233 16-Oct (claude-builder): this test used to assert the
+  // opposite ("present is NOT marked seeded"). An unspent token for an
+  // already-on strategy would have re-armed it after a later edge-watchdog
+  // disarm — the guard that cannot hold. A satisfied order is a spent order.
   const db = freshDb()
   setState(db, 'enabled_strategies_json', JSON.stringify(['tsmom_long']))
-  const r = seedGlobalStrategiesFromConfig(db, io, { file: cfgFile({ arm: ['tsmom_long'] }) })
-  assert.deepEqual(r.present, ['tsmom_long'])
+  const file = cfgFile({ arm: ['tsmom_long:setb-test'] })
+  const r = seedGlobalStrategiesFromConfig(db, io, { file })
+  assert.deepEqual(r.present, ['tsmom_long:setb-test'])
   assert.deepEqual(r.armed, [])
-  // Not recorded as seeded, so the order still stands if it is later disarmed
-  // and re-issued — the seed record means "this boot spent the order", and
-  // this boot did not.
-  assert.equal(getState(db, GLOBAL_SEED_STATE_KEY) ?? null, null)
+  assert.deepEqual(JSON.parse(getState(db, GLOBAL_SEED_STATE_KEY)), ['tsmom_long:setb-test'], 'the satisfied order is recorded as spent')
+  // A guard disarms it later: the next boot leaves it off.
+  setState(db, 'enabled_strategies_json', JSON.stringify([]))
+  const again = seedGlobalStrategiesFromConfig(db, io, { file })
+  assert.deepEqual(again.armed, [], 'the spent token does not re-arm')
+  assert.deepEqual(again.seeded, ['tsmom_long:setb-test'])
+  assert.equal(armedTradeKeys(db, getState, null).has('tsmom_long'), false, 'the later disarm stands')
 })
 
 test('a suffixed entry re-arms once more after a disarm', () => {

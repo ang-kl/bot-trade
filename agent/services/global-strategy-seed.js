@@ -75,9 +75,18 @@ export function seedGlobalStrategiesFromConfig(db, io, { file = null, log = () =
     if (typeof entry !== 'string' || !entry.trim()) { out.skipped.push(`${JSON.stringify(entry)}: not a string`); continue }
     const key = strategyOf(entry)
     if (!STRATEGY_KEYS.includes(key)) { out.skipped.push(`${entry}: unknown strategy '${key}'`); continue }
-    // Already on globally — nothing to do, and NOT recorded as seeded, so the
-    // order still stands if it is later disarmed and the entry is re-issued.
-    if (enabledStrategies(db, getState).some(s => s.key === key)) { out.present.push(entry); continue }
+    // Already on globally — nothing to change, and the order is CONSUMED
+    // (recorded as spent) at this boot. Claude · № 15,233 16-Oct (Codex round 2
+    // on #1392; claude-builder): it used to be left unrecorded "so the order
+    // still stands if later disarmed", which meant an unspent token could undo
+    // a later guard disarm at the following boot — the guard that cannot hold.
+    // A satisfied order is a spent order; to arm again after a disarm, issue
+    // a new token (see _reseed in the header).
+    if (enabledStrategies(db, getState).some(s => s.key === key)) {
+      out.present.push(entry)
+      if (!doneSet.has(entry)) { doneSet.add(entry); dirty = true }
+      continue
+    }
     // Applied by an earlier boot and since turned off by something. Left off:
     // see the seed-once note in the header.
     if (doneSet.has(entry)) { out.seeded.push(entry); continue }
