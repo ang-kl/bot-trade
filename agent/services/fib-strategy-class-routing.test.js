@@ -110,7 +110,8 @@ test('runFibScan: routed candidates are rows with trade_grade routed, out of hot
   assert.match(r.desk_note, /3 routed out by class/)
   assert.match(r.desk_note, /\[tiers A 1\/2 slots ~1 runs, B 2\/13 slots ~1 runs\]/)
   assert.deepEqual({ tierA: r.routing.tiers.tierA, tierB: r.routing.tiers.tierB }, { tierA: 1, tierB: 2 })
-  assert.equal(r.next_cursor, 1, 'the run counter under the share')
+  assert.equal(r.next_cursor, 0, 'tier A (1 symbol) and tier B (2) each wrapped to 0 after one full run')
+  assert.equal(r.rotationRuns, 1, 'the slower tier\'s pass')
   assert.equal(r.coverage.scanned, 3)
 })
 
@@ -148,4 +149,16 @@ test('mixed candidates end to end (Codex round 2 on #1390): the downstream consu
   assert.ok(a, 'every member still votes'); assert.equal(a.total, 3)
   assert.deepEqual(a, votes(withoutRouted))
   assert.equal(a.members.find(m => m.symbol === 'NATGAS').bias, 'short', 'NATGAS votes with its surviving short, not the routed skip')
+})
+
+test('rotationRuns is the SLOWER tier\'s pass under the share (Codex round 3 on #1390): scanner-work prices nextDue from it', async (t) => {
+  fresh(t)
+  // 4 tier-A (fx) + 20 tier-B (energy) symbols, batch 5, 2 slots to tier A: A every 2 runs, B every ceil(20/3) = 7; legacy ceil(24/5) = 5.
+  const symbols = [...Array.from({ length: 4 }, (_, i) => ({ symbol: `A${i}` })), ...Array.from({ length: 20 }, (_, i) => ({ symbol: `B${i}` }))]
+  const symbolMap = Object.fromEntries(symbols.map((w, i) => [w.symbol, 100 + i]))
+  const classOfAB = (sym) => ({ cls: String(sym).startsWith('B') ? 'energy' : 'fx', source: 'test' })
+  const r = await runFibScan(CREDS, symbolMap, symbols, { strategies: STRATS, classRouting: POLICY, classOf: classOfAB, cursor: 0, batchSize: 5 })
+  assert.deepEqual({ a: r.routing.tiers.runsPerPassA, b: r.routing.tiers.runsPerPassB }, { a: 2, b: 7 })
+  assert.equal(r.rotationRuns, 7)
+  assert.match(r.desk_note, /full watchlist every ~7 runs/)
 })

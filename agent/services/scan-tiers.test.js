@@ -8,7 +8,7 @@
 // unchanged for every caller that passes no class rank.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { selectScanBatch, tieredScanBatch } from './fib-strategy.js'
+import { selectScanBatch, tieredScanBatch, TIER_CURSOR_STRIDE } from './fib-strategy.js'
 
 const mk = (prefix, n, rank) => Array.from({ length: n }, (_, i) => ({ symbol: `${prefix}${i}`, rank }))
 const rankOf = (w) => w.rank
@@ -19,7 +19,8 @@ test('8 of 15 slots go to tier A (rank ≤ 3), the remaining 7 to tier B, each t
   const s = [...mk('B', 30, 5), ...mk('A', 20, 1)] // list order does not decide the tiers
   const r0 = selectScanBatch(s, { batchSize: 15, cursor: 0, ...SHARE })
   assert.deepEqual(names(r0), ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6'])
-  assert.equal(r0.nextCursor, 1, 'the cursor is a run counter under the share')
+  assert.equal(r0.nextCursor, 8 + 7 * TIER_CURSOR_STRIDE, 'the cursor encodes both tier offsets, each advanced by what it took')
+  assert.deepEqual([r0.tiers.aStart, r0.tiers.bStart], [0, 0])
   assert.deepEqual({ tierA: r0.tiers.tierA, tierB: r0.tiers.tierB, prioritySlots: r0.tiers.prioritySlots, runsPerPassA: r0.tiers.runsPerPassA, runsPerPassB: r0.tiers.runsPerPassB },
     { tierA: 20, tierB: 30, prioritySlots: 8, runsPerPassA: 3, runsPerPassB: 5 })
   const r1 = selectScanBatch(s, { batchSize: 15, cursor: r0.nextCursor, ...SHARE })
@@ -65,6 +66,19 @@ test('spike boost still rides first and counts against the batch; held symbols n
   assert.equal(names(r).filter(n => n.startsWith('A')).length, 8, 'tier A keeps its 8')
   assert.equal(names(r).filter(n => n.startsWith('B')).length, 7, 'the spike took one of tier B\'s 7')
   assert.equal(r.restCount, 47, 'pool = 50 − 2 held − 1 boosted')
+  assert.equal(r.nextCursor, 8 + 6 * TIER_CURSOR_STRIDE, 'tier B advanced by the 6 it took, not its nominal 7')
+})
+
+test('a symbol boosted on EVERY run never hides a tail row (Codex round 3 on #1390): tiers advance by actual consumption', () => {
+  const s = [...mk('A', 20, 1), ...mk('B', 29, 5)]
+  const seenB = new Set(); let cursor = 0
+  for (let run = 0; run < 12; run++) {
+    const r = selectScanBatch(s, { batchSize: 15, cursor, prioritySpikeSymbols: ['B5'], ...SHARE })
+    assert.equal(r.batch[0].symbol, 'B5')
+    for (const b of r.batch) if (b.symbol.startsWith('B')) seenB.add(b.symbol)
+    cursor = r.nextCursor
+  }
+  assert.equal(seenB.size, 29, 'every tier-B symbol scanned within 12 boosted runs (28-row pool at 6 rows a run)')
 })
 
 test('a rank the policy cannot read (NaN/undefined) is tier B, never tier A', () => {
@@ -84,11 +98,13 @@ test('share off (no classRank, zero slots, or a non-numeric rank cap) → the le
   assert.equal(legacy.nextCursor, 7 + 14, 'legacy cursor = symbol index')
 })
 
-test('tieredScanBatch: the run counter wraps at |A|·|B| and a cursor left by the legacy rotation is just a starting run', () => {
+test('tieredScanBatch: a cursor left by the legacy rotation decodes as a tier-A offset; the next cursor carries both offsets', () => {
   const rest = [...mk('A', 4, 1), ...mk('B', 5, 5)]
   const r = tieredScanBatch(rest, [], 3, 19, { classRank: rankOf, prioritySlots: 2, priorityMaxRank: 3 })
-  assert.equal(r.nextCursor, 0, '(19 + 1) % 20')
-  assert.deepEqual(names(r), ['A2', 'A3', 'B4'], 'A starts at (19·2) % 4 = 2, B at (19·1) % 5 = 4')
+  assert.deepEqual(names(r), ['A3', 'A0', 'B0'], 'A starts at 19 % 4 = 3 and wraps, B at 0')
+  assert.equal(r.nextCursor, 1 + 1 * TIER_CURSOR_STRIDE, 'A: (3 + 2) % 4 = 1; B: (0 + 1) % 5 = 1')
+  const r2 = tieredScanBatch(rest, [], 3, r.nextCursor, { classRank: rankOf, prioritySlots: 2, priorityMaxRank: 3 })
+  assert.deepEqual(names(r2), ['A1', 'A2', 'B1'])
   const empty = tieredScanBatch([], [], 15, 3, { classRank: rankOf, prioritySlots: 8, priorityMaxRank: 3 })
   assert.deepEqual(empty.batch, []); assert.equal(empty.nextCursor, 0); assert.equal(empty.restCount, 0)
 })

@@ -904,31 +904,33 @@ export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cur
  * hands the spare slots to the other, so a run never scans fewer symbols than
  * the batch allows while either tier has more.
  *
- * THE CURSOR IS A RUN COUNTER here, not a symbol index: each tier's start is
- * `run × its nominal slots` modulo its size, which walks both tiers in
- * contiguous windows and wraps. The nominal slot counts are fixed by the
- * batch size (not by this run's spike boost), so a spike run — which takes
- * fewer rotation slots — leaves the tail of that run's windows to the next
- * pass rather than shifting every later window; the same trade-off the
- * one-cursor rotation already makes when the pool changes size. Pure.
+ * THE CURSOR ENCODES BOTH TIER OFFSETS (Claude · № 15,175 16-Oct (Codex round 3 on #1390, owner: "Round 3: fix both, then merge when green"; claude-builder)): `tierAStart + tierBStart × STRIDE`, and each tier advances by
+ * the number of symbols it ACTUALLY took this run — a run that spends slots
+ * on a spike boost takes fewer rotation rows and moves that tier's window by
+ * exactly that many, so a symbol boosted on every run can never hide the
+ * same tail row of every window (Codex round 3). A legacy cursor (a symbol
+ * index, far below STRIDE) decodes as a tier-A offset with tier B at 0. Pure.
  */
+export const TIER_CURSOR_STRIDE = 100_000 // a watchlist is far below 100,000 symbols
 export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, prioritySlots, priorityMaxRank }) {
   const boosted = new Set(spikeBoost.map(w => String(w.symbol).toUpperCase()))
   const pool = rest.filter(w => !boosted.has(String(w.symbol).toUpperCase()))
   const rank = (w) => { const r = Number(classRank(w)); return Number.isFinite(r) ? r : Infinity }
   const tierA = pool.filter(w => rank(w) <= priorityMaxRank)
   const tierB = pool.filter(w => !(rank(w) <= priorityMaxRank))
-  const run = Math.max(0, Math.floor(cursor) || 0)
+  const raw = Math.max(0, Math.floor(cursor) || 0)
+  const aStart = tierA.length ? (raw % TIER_CURSOR_STRIDE) % tierA.length : 0
+  const bStart = tierB.length ? Math.floor(raw / TIER_CURSOR_STRIDE) % tierB.length : 0
+  const encode = (a, b) => a + b * TIER_CURSOR_STRIDE
   const aNominal = Math.min(prioritySlots, size)
   const bNominal = size - aNominal
   const tiers = {
-    tierA: tierA.length, tierB: tierB.length, prioritySlots: aNominal, priorityMaxRank, run,
+    tierA: tierA.length, tierB: tierB.length, prioritySlots: aNominal, priorityMaxRank, aStart, bStart,
     runsPerPassA: tierA.length && aNominal ? Math.ceil(tierA.length / aNominal) : null,
     runsPerPassB: tierB.length && bNominal ? Math.ceil(tierB.length / bNominal) : null,
   }
-  const period = Math.max(1, tierA.length) * Math.max(1, tierB.length)
   const remaining = size - spikeBoost.length
-  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? (run + 1) % period : 0, restCount: pool.length, tiers }
+  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? encode(aStart, bStart) : 0, restCount: pool.length, tiers }
   let aTake = Math.min(aNominal, remaining, tierA.length)
   let bTake = Math.min(bNominal, remaining - aTake, tierB.length)
   aTake = Math.min(tierA.length, aTake + (remaining - aTake - bTake))
@@ -938,11 +940,12 @@ export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, pri
     const s = ((start % list.length) + list.length) % list.length
     return [...list.slice(s), ...list.slice(0, s)].slice(0, Math.min(n, list.length))
   }
-  const aStart = tierA.length ? (run * aNominal) % tierA.length : 0
-  const bStart = tierB.length ? (run * bNominal) % tierB.length : 0
+  // Advance each tier by what it ACTUALLY took (never by the nominal share).
+  const aNext = tierA.length ? (aStart + aTake) % tierA.length : 0
+  const bNext = tierB.length ? (bStart + bTake) % tierB.length : 0
   return {
     batch: [...spikeBoost, ...slice(tierA, aStart, aTake), ...slice(tierB, bStart, bTake)],
-    nextCursor: (run + 1) % period,
+    nextCursor: encode(aNext, bNext),
     restCount: pool.length,
     tiers,
   }
@@ -1093,7 +1096,13 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   // Coverage counts SYMBOLS, not rows — `scans.length` is now rows, and
   // reporting "42 of 30 symbols" would be nonsense.
   const scannedSymbols = uniq(scans.map(s => s.symbol)).length
-  const rounds = restCount ? Math.ceil(restCount / Math.max(1, batch.length || 1)) : 1
+  // Claude · № 15,175 16-Oct (Codex round 3 on #1390, owner: "Round 3: fix both, then merge when green"; claude-builder)
+  // Under the tiers the full-watchlist pass is the SLOWER tier's pass (tier B
+  // at 7 of 15 slots), not rest ÷ batch — scanner-work.js prices every
+  // instrument's nextDue from this figure.
+  const rounds = tiers
+    ? Math.max(1, tiers.runsPerPassA ?? 0, tiers.runsPerPassB ?? 0)
+    : (restCount ? Math.ceil(restCount / Math.max(1, batch.length || 1)) : 1)
   return {
     scans,
     hot,
