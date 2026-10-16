@@ -1,6 +1,10 @@
 {
   "_note": "Claude · № 13,094 11-Oct (ordered № 13,093; claude-builder). The parameters of the RESEARCH programme (theory-gap readouts, bar-form research), kept here so none is a constant in code (owner principle 9: setups are not hardcoded). Every value is a research choice the owner can change without a code change, and each run records the values it used. NOTHING here is read by a live gate, an order path or trade management: agent/research-isolation.test.js pins that. Live management values used by the replays (the managed trail, the take-at-R and its fraction, the keeper, the hybrid trigger, the Chandelier) are read from their own live loaders and modules at run time, never restated here. The sample minimum below which a figure reads INSUFFICIENT is agent/config/tick-validation.json traded.minTrades, the owner's existing bar, not a value of this file. agent/lib/research-config.test.js pins that these values are READ FROM THIS FILE.",
   "exitReplay": {
+    "validation": {
+      "_note": "Claude · № 15,258 17-Oct (research plan step 2): the exit replay's chronological holdout, the same rule and value as barForm.validation (0.7, self-derived). TRAIN = closed at or before the cutoff, CONFIRM = opened at or after it; a rule is selected on TRAIN and judged on CONFIRM. Outside (0, 1): no split, said so.",
+      "trainFraction": 0.7
+    },
     "_note": "Sweeps for the exit-counterfactual extensions (plan B1–B4). trailR: extra trail distances in R beside the built-in trail_1R; tpR: fixed-R targets replayed; followThroughR: the R levels whose reach-before-stop share is reported; chandelier: the since-entry Chandelier replayed as a bar-close approximation of the native TrailEngine spec — its multiplier and period are NOT set here, they are imported from agent/services/mae-chandelier-observe.js at run time; exitAtMeanPeriod: the SMA whose cross is the mean-reversion 'exit at the mean' rule.",
     "trailR": [
       0.5,

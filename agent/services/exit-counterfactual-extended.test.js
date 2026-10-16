@@ -46,7 +46,7 @@ const rule = (r, name) => r.rules.find(x => x.rule === name)
 test('exports: the route reads its option names, presets and group keys from here', () => {
   assert.ok(EXTENDED_OPTIONS.includes('stop') && EXTENDED_OPTIONS.includes('trailR'))
   assert.deepEqual([...PRESETS], ['meanrev', 'breakout', 'momentum', 'all'])
-  assert.deepEqual([...GROUP_KEYS], ['strategy', 'timeframe', 'regime', 'family', 'gateTag'])
+  assert.deepEqual([...GROUP_KEYS], ['strategy', 'timeframe', 'regime', 'family', 'gateTag', 'class', 'side', 'source'])
 })
 
 test('stop=recorded replays against sl_price, stop=initial against broker_sl_initial — the same bars give different R and a different actual source', () => {

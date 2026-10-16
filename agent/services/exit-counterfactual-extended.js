@@ -29,7 +29,12 @@
 // well it reproduces the actual outcomes on the same trades.
 // ---------------------------------------------------------------------------
 import { replayablePopulation, MIN_SAMPLE } from './exit-counterfactual.js'
-import { replayExit, summariseReplay, favourableExcursion, DEFAULT_RULES } from '../lib/exit-replay.js'
+import { replayExit, summariseReplay, favourableExcursion, DEFAULT_RULES, entryBarCoverage } from '../lib/exit-replay.js'
+// Claude · № 15,258 17-Oct (research plan step 2 prerequisites, owner: "Build it, initial stop as the default,
+// merge when green"; claude-builder): the broker's asset class per symbol. This report runs on an isolated
+// worker whose module state is not primed at boot, so the cached tree is read here (read-only).
+import { classOfSymbol, initAssetClasses, assetClassStatus } from '../lib/asset-class.js'
+import { getState } from '../db.js'
 import { loadResearchConfig, withOverrides } from '../lib/research-config.js'
 import { loadManagedExit } from './managed-exit.js'
 import { familyOf } from './strategies.js'
@@ -42,7 +47,7 @@ import { regimeBlocks, loadRegimeGateConfig, DEFAULT_MAX_REGIME_AGE_MIN } from '
 
 export const EXTENDED_OPTIONS = Object.freeze(['stop', 'tpR', 'design', 'family', 'preset', 'groupBy', 'followThrough', 'trailR'])
 export const PRESETS = Object.freeze(['meanrev', 'breakout', 'momentum', 'all'])
-export const GROUP_KEYS = Object.freeze(['strategy', 'timeframe', 'regime', 'family', 'gateTag'])
+export const GROUP_KEYS = Object.freeze(['strategy', 'timeframe', 'regime', 'family', 'gateTag', 'class', 'side', 'source'])
 /** The gate's configured age bound (regime_gate_json.maxRegimeAgeMin over the gate's default) in ms: the tag describes the CONFIGURED gate (Codex P2 on #1311). */
 export function gateTagMaxAgeMs(db) { const cfg = loadRegimeGateConfig(db); const min = Number(cfg?.maxRegimeAgeMin); return (Number.isFinite(min) && min > 0 ? min : DEFAULT_MAX_REGIME_AGE_MIN) * 60_000 }
 export const MAX_GROUP_VALUES = 24
@@ -116,7 +121,7 @@ export function scenarioOf(rule) {
   return /^managed_approx|^hybrid_(half|[0-9.]+pct)_/.test(String(rule?.name || '')) ? 'current_policy' : 'fixed_rule'
 }
 /** The cost model every replay figure carries: declared, not modelled. */
-export const COST_MODEL = Object.freeze({ model: 'none', note: 'exits fill at the level on the bar that touches it; no spread, slippage, commission or swap; R is price-based against the chosen stop. The stored windows carry no bid/ask, so a spread model cannot be fitted from them.' })
+export const COST_MODEL = Object.freeze({ model: 'none', status: 'gross_only_prerequisite_open', prerequisite: 'a historical spread/slippage source for counterfactual exit prices (Codex P2 on #1391); commission and swap from the broker terms then price each exit net. Until then every figure is gross and no rule is confirmed beyond confirmed_gross_only.', note: 'exits fill at the level on the bar that touches it; no spread, slippage, commission or swap; R is price-based against the chosen stop. The stored windows carry no bid/ask, so a spread model cannot be fitted from them.' })
 
 /** The strategy's own pre-stretch target for a row, from its risk event, shifted by the fill offset. */
 function designTargets(db, rows) {
@@ -170,7 +175,7 @@ export function gateTagsFor(db, rows) {
  */
 export function exitCounterfactualExtended(db, {
   days = 30, cleanOnly = true, accountId = null, strategy = null, excludeStrategy = null, family = null,
-  stop = 'recorded', tpR = null, trailR = null, design = false, preset = null, groupBy = null, followThrough = false,
+  stop = 'initial', tpR = null, trailR = null, design = false, preset = null, groupBy = null, followThrough = false,
   followThroughR = null, minSample = MIN_SAMPLE,
 } = {}) {
   const research = loadResearchConfig()
@@ -181,6 +186,13 @@ export function exitCounterfactualExtended(db, {
   // Family filter on the attributed strategy, with the registry's own map.
   let eligible = pop.eligible
   if (family) eligible = eligible.filter(({ row }) => familyOf(row.strategy_attr) === family)
+  // Claude · № 15,258 17-Oct: under stop=initial a row without the broker's
+  // first stop is EXCLUDED and counted — never silently replayed against the
+  // plan stop (research plan step 2). A window that does not span the fill
+  // (clipped at capture) is excluded and counted for every rule.
+  const coverage = { no_initial_stop: 0, clipped: 0 }
+  if (stop === 'initial') eligible = eligible.filter(({ row }) => (num(row.broker_sl_initial) != null ? true : (coverage.no_initial_stop++, false)))
+  eligible = eligible.filter(({ row, bars }) => (entryBarCoverage(bars, { side: row.side, entry: row.entry_price, sl: stop === 'initial' ? num(row.broker_sl_initial) : num(row.sl_price), openedAtMs: ms(row.opened_at) }).status === 'clipped' ? (coverage.clipped++, false) : true))
   const rows = eligible.map(e => e.row)
   const dz = design ? designTargets(db, rows) : null
   const tags = gateTagsFor(db, rows)
@@ -190,7 +202,7 @@ export function exitCounterfactualExtended(db, {
   const hybrid = { triggerR: hybridTriggerR(db), closeFraction: hybridSetting.closeFraction }
   const rules = buildRules({ cfg, policy, preset, tpR: tpR ? cfg.tpR : [], trailR: trailR ? cfg.trailR : [], design, family, hybrid })
 
-  const stopOf = row => (stop === 'initial' ? (num(row.broker_sl_initial) ?? num(row.sl_price)) : num(row.sl_price))
+  const stopOf = row => (stop === 'initial' ? num(row.broker_sl_initial) : num(row.sl_price))
   const tradeFor = (row, rule) => {
     let tp = num(row.tp_price)
     if (rule.tpSource === 'design') tp = dz?.targets.get(row.id) ?? null
@@ -199,6 +211,7 @@ export function exitCounterfactualExtended(db, {
   const replayOne = (e, rule) => {
     const t = tradeFor(e.row, rule)
     if (t._noTp) return { ok: false, reason: 'no design target on record (risk event pruned or absent)' }
+    if (entryBarCoverage(e.bars, t, rule).status === 'entry_bar_unresolved') return { ok: false, reason: 'entry_bar_unresolved', entryBarUnresolved: true }
     return replayExit(e.bars, t, rule)
   }
   const specOf = rule => Object.fromEntries(Object.entries(rule).filter(([k]) => k !== 'name'))
@@ -216,6 +229,7 @@ export function exitCounterfactualExtended(db, {
     ...summariseReplay(out),
     common: summariseReplay(cohortIdx.map(i => out[i])),
     droppedFromCommon: out.length - cohortIdx.length,
+    entryBarUnresolved: out.filter(o => o?.entryBarUnresolved).length,
   }))
   const cohort = { n: cohortIdx.length, of: eligible.length, rule: 'a trade is in the common cohort only when EVERY compared rule resolves it (no truncation, no ambiguity, no missing level); read `common` to compare rules, the headline figures to describe one', notResolvedByVariant: Object.fromEntries(results.map(({ rule, out }) => [rule.name, out.filter(o => !o?.ok).length])) }
 
@@ -248,7 +262,10 @@ export function exitCounterfactualExtended(db, {
   // Groups: the same rules per group value, bounded.
   let groups = null
   if (groupBy) {
-    const keyOf = row => groupBy === 'strategy' ? (row.strategy_attr || '(none)') : groupBy === 'timeframe' ? (row.label_timeframe || '(none)') : groupBy === 'regime' ? (row.label_regime || '(none)') : groupBy === 'gateTag' ? (tags.get(row.id)?.tag ?? 'unknown') : (familyOf(row.strategy_attr) || '(none)')
+    if (groupBy === 'class' && !assetClassStatus().primed) initAssetClasses(db, getState)
+    const sideOf = row => { const s = String(row.side || '').toLowerCase(); return s === 'buy' || s === 'long' ? 'long' : s === 'sell' || s === 'short' ? 'short' : '(none)' }
+    const keyOf = row => groupBy === 'strategy' ? (row.strategy_attr || '(none)') : groupBy === 'timeframe' ? (row.label_timeframe || '(none)') : groupBy === 'regime' ? (row.label_regime || '(none)') : groupBy === 'gateTag' ? (tags.get(row.id)?.tag ?? 'unknown')
+      : groupBy === 'class' ? classOfSymbol(row.symbol).cls : groupBy === 'side' ? sideOf(row) : groupBy === 'source' ? (row.origin || '(none)') : (familyOf(row.strategy_attr) || '(none)')
     const buckets = new Map()
     for (const e of eligible) { const k = keyOf(e.row); (buckets.get(k) || buckets.set(k, []).get(k)).push(e) }
     const ordered = [...buckets.entries()].sort((a, b) => b[1].length - a[1].length)
@@ -260,12 +277,49 @@ export function exitCounterfactualExtended(db, {
     }
   }
 
+  // Claude · № 15,258 17-Oct: the chronological holdout (research plan step 2,
+  // the same rule as barForm.validation). Rows are placed by time: TRAIN closed
+  // at or before the cutoff, CONFIRM opened at or after it, a trade spanning
+  // it in neither (counted). A rule is chosen on TRAIN (best common
+  // expectancy among rules with minSample usable) and judged on CONFIRM,
+  // which played no part in the choice. Costs are not modelled, so the best a
+  // verdict can read is confirmed_gross_only.
+  const validation = (() => {
+    const frac = research.exitReplay?.validation?.trainFraction ?? null
+    if (!(frac > 0 && frac < 1)) return { status: 'not_split', reason: 'research.json exitReplay.validation.trainFraction missing or outside (0, 1)' }
+    const opens = eligible.map(e => ms(e.row.opened_at)), closes = eligible.map(e => ms(e.row.closed_at))
+    const known = opens.filter(v => v != null).concat(closes.filter(v => v != null))
+    if (known.length < 2) return { status: 'insufficient', reason: 'no dated rows', trainFraction: frac }
+    const start = Math.min(...known), end = Math.max(...known), cutoff = start + frac * (end - start)
+    const train = [], confirm = []; let straddling = 0
+    eligible.forEach((_, i) => { if (closes[i] != null && closes[i] <= cutoff) train.push(i); else if (opens[i] != null && opens[i] >= cutoff) confirm.push(i); else straddling++ })
+    const block = idx => {
+      const common = idx.filter(i => results.every(r => r.out[i]?.ok))
+      return Object.fromEntries(results.map(({ rule, out }) => [rule.name, summariseReplay(common.map(i => out[i]))]))
+    }
+    const tr = block(train), cf = block(confirm)
+    const ranked = Object.entries(tr).filter(([, s]) => s.usable >= minSample && s.expectancyR != null).sort((a, b) => b[1].expectancyR - a[1].expectancyR)
+    const selected = ranked.length ? ranked[0][0] : null
+    const conf = selected ? cf[selected] : null
+    let verdict = 'insufficient'
+    if (selected && conf && conf.usable >= minSample) verdict = conf.expectancyR > 0 && tr[selected].expectancyR > 0 ? (COST_MODEL.status === 'modelled' ? 'confirmed' : 'confirmed_gross_only') : 'not_confirmed'
+    return {
+      status: 'split', trainFraction: frac, cutoff: new Date(cutoff).toISOString(),
+      rows: { train: train.length, confirm: confirm.length, straddling },
+      selectedOnTrain: selected, verdict, costs: COST_MODEL.status,
+      train: tr, confirm: cf,
+      rule: 'selection on TRAIN common-cohort expectancy (rules with minSample usable); CONFIRM untouched by the choice; a verdict is gross while costs.status is not modelled',
+    }
+  })()
+
   const best = perRule.filter(r => r.usable >= minSample).length
   return {
     verdict: best > 0 ? 'OK' : 'INSUFFICIENT',
     extended: true,
     accountId: accountId == null ? null : String(accountId), days, cleanOnly, strategy, excludeStrategy, family, minSample,
-    stop: { basis: stop === 'initial' ? 'broker_sl_initial, else sl_price' : 'sl_price (as recorded)' },
+    stop: { basis: stop === 'initial' ? 'broker_sl_initial (rows without it excluded, counted in coverage.no_initial_stop)' : 'sl_price (as recorded)' },
+    coverage: { ...coverage, entryBarUnresolvedByRule: Object.fromEntries(perRule.map(r => [r.rule, r.entryBarUnresolved])), rule: 'clipped: no stored bar spans the fill; entry_bar_unresolved: the fill is inside a bar whose range reaches a level the rule acts on (stop, target or partial). Both excluded from every figure. Trail rules start their peak from the next bar: a known late (never false) bias.' },
+    validation,
     actualSource,
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },
     management: { source: 'loadManagedExit (managed_exit_json over defaults) + mae-chandelier-observe + capped-hybrid-policy', trailR: policy.trailR, takeAtR: policy.takeAtR, takeAtRFamilies: policy.takeAtRFamilies, takeFractionAtR: policy.takeFractionAtR, chandelier: { mult: DEFAULT_ATR_MULT, period: DEFAULT_ATR_PERIOD }, hybridTriggerR: hybrid.triggerR, hybridCloseFraction: hybrid.closeFraction, hybridSource: hybridSetting.source },

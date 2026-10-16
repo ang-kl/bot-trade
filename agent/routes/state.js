@@ -1956,7 +1956,8 @@ export default function stateRouter(db) {
       // request that names only it is answered byte-identically to before.
       const extendedAsked = CF_EXTENDED_OPTIONS.filter(k => k !== 'trailR').some(k => req.query[k] != null && req.query[k] !== '')
       if (extendedAsked) {
-        const stop = req.query.stop == null || req.query.stop === '' ? 'recorded' : String(req.query.stop)
+        // Claude · № 15,258 17-Oct (owner: "initial stop as the default"): the broker's first stop is the default basis.
+        const stop = req.query.stop == null || req.query.stop === '' ? 'initial' : String(req.query.stop)
         if (!['recorded', 'initial'].includes(stop)) return res.status(400).json({ error: 'stop must be recorded or initial', code: 'exit_counterfactual_invalid_stop' })
         const preset = req.query.preset ? String(req.query.preset) : null
         if (preset && !CF_PRESETS.includes(preset)) return res.status(400).json({ error: `preset must be one of ${CF_PRESETS.join(', ')}`, code: 'exit_counterfactual_invalid_preset' })

@@ -56,6 +56,8 @@ export function loadResearchConfig({ file = RESEARCH_CONFIG_FILE } = {}) {
       followThroughR: numberList(er.followThroughR, { max: 10 }),
       exitAtMeanPeriod: posInt(er.exitAtMeanPeriod) ? er.exitAtMeanPeriod : null,
       maxDays: posInt(er.maxDays) ? er.maxDays : null,
+      // Claude · № 15,258 17-Oct: the exit replay's holdout; outside (0, 1) is null (no split, said so).
+      validation: { trainFraction: finite(er.validation?.trainFraction) && er.validation.trainFraction > 0 && er.validation.trainFraction < 1 ? er.validation.trainFraction : null },
     },
     barForm: {
       timeBarsMs: numberList(bf.timeBarsMs, { max: 86_400_000, limit: 12, min: 999 }),

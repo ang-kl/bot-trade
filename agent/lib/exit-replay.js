@@ -386,3 +386,59 @@ export function toBarTuple(b) {
 export function normaliseBars(bars) {
   return Array.isArray(bars) ? bars.map(toBarTuple) : []
 }
+
+// ---------------------------------------------------------------------------
+// Claude · № 15,258 17-Oct (owner: "Build it, initial stop as the default,
+// merge when green" — research plan step 2 prerequisites; claude-builder).
+//
+// Window coverage and the entry bar. `replayExit` skips every bar whose open
+// is before the fill, so the bar CONTAINING a mid-bar fill is never replayed:
+// a stop or target inside that bar's range may have been hit after the fill,
+// and the replay cannot know. A window whose first bar starts after the fill
+// (clipped at the 400-bar capture fetch, loss-postmortem.js) is missing that
+// interval entirely. Both are excluded from rule comparison and counted.
+// ---------------------------------------------------------------------------
+
+/** The bar interval of a stored window: the median positive spacing, or null. */
+export function barIntervalMs(bars) {
+  const ts = normaliseBars(bars).map(b => num(b?.[T])).filter(t => t != null)
+  const d = []
+  for (let i = 1; i < ts.length; i++) if (ts[i] > ts[i - 1]) d.push(ts[i] - ts[i - 1])
+  if (!d.length) return null
+  d.sort((a, b) => a - b)
+  return d[Math.floor(d.length / 2)]
+}
+
+/**
+ * 'ok' | 'clipped' | 'entry_bar_unresolved' for one trade under one rule.
+ * clipped: no stored bar spans the fill (`t <= openedAt < t + interval`).
+ * entry_bar_unresolved: the fill is inside a bar (not at its open) and that
+ * bar's range reaches a level the rule acts on — the stop, the target (the
+ * rule's tpR or the trade's own), or the partial level.
+ */
+export function entryBarCoverage(bars, trade, rule = {}) {
+  const tuples = normaliseBars(bars)
+  const openedAtMs = num(trade?.openedAtMs)
+  if (openedAtMs == null || !tuples.length) return { status: 'ok' }
+  const tf = barIntervalMs(tuples)
+  const k = tuples.findIndex(b => {
+    const t = num(b?.[T])
+    return t != null && t <= openedAtMs && (tf == null ? true : openedAtMs < t + tf)
+  })
+  if (k < 0) return { status: 'clipped' }
+  const bar = tuples[k]
+  if (num(bar[T]) === openedAtMs) return { status: 'ok' }
+  const side = String(trade?.side || '').toLowerCase()
+  const long = side === 'long' || side === 'buy'
+  const entry = num(trade?.entry), sl = num(trade?.sl)
+  if (entry == null || sl == null) return { status: 'ok' }
+  const risk = Math.abs(entry - sl)
+  const at = r => (long ? entry + r * risk : entry - r * risk)
+  const levels = [sl]
+  if (rule.tpR != null && num(rule.tpR) != null) levels.push(at(num(rule.tpR)))
+  else if (num(trade?.tp) != null) levels.push(num(trade.tp))
+  if (num(rule.partialAtR) != null) levels.push(at(num(rule.partialAtR)))
+  const lo = num(bar[L]), hi = num(bar[H])
+  if (lo == null || hi == null) return { status: 'ok' }
+  return levels.some(p => p >= lo && p <= hi) ? { status: 'entry_bar_unresolved' } : { status: 'ok' }
+}
