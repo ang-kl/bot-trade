@@ -1,21 +1,22 @@
 {
-  "_note": "2026-09-28 owner-approved restoration. All 12 intraday strategies are trade-armed on every enabled account. A fresh _reseed_all token applies once to existing accounts and to newly enabled accounts. Guards can disarm thereafter; scanning must remain on unless a human approves a pause. The momentum trial remains unchanged.",
+  "_note": "2026-09-28 owner-approved restoration. All 12 intraday strategies are trade-armed on every enabled account. A fresh _reseed_all token applies once to existing accounts and to newly enabled accounts. Guards can disarm thereafter; scanning must remain on unless a human approves a pause. The momentum trial remains unchanged. 16-10-2026 (owner: \"Set B: literal top 6\", after № 15,228; Claude · № 15,229 16-Oct, claude-builder): the 30-day rank of the bot's own closes cuts vwap_trend, ema_pullback and fvg_retrace to _off and re-arms rsi_meanrev and va_breakout once (setb-20261016 tokens); the guards keep their authority to disarm again on evidence.",
   "_all": [
     "fib_618_fade",
     "cup_handle",
     "inv_cup_handle",
-    "ema_pullback",
     "donchian_breakout",
     "rsi_meanrev",
-    "vwap_trend",
     "vp_value",
     "rsi2_reversion",
     "fib_confluence",
-    "va_breakout",
-    "fvg_retrace"
+    "va_breakout"
   ],
-  "_off": [],
-  "_off_note": "Historical evidence measured 19-09-2026 (90 days, all accounts): fib_618_fade PF 0.62/49 closes, ema_pullback 0.10/14, rsi_meanrev 0.22/8, vp_value 0.61/18, vwap_trend 0.70/30, va_breakout 0/3, fvg_retrace 0/1, donchian_breakout 1.09/29, rsi2_reversion 1.13/31, cup_handle 1 close; fib_confluence PF 2.72/26. The 20-09 retirement was superseded by owner approval 28-09 to arm all intraday strategies. Past performance is not a trading guarantee; existing risk limits and future guard disarms remain in force.",
+  "_off": [
+    "vwap_trend:setb-20261016",
+    "ema_pullback:setb-20261016",
+    "fvg_retrace:setb-20261016"
+  ],
+  "_off_note": "The setb-20261016 token gives the OFF order a fresh seed identity: the 20-09 retirement spent off:<strategy> on every deployed account and the 28-09 restore re-armed without clearing it (Codex round 1 on #1392). 16-10-2026 owner order (Set B): vwap_trend 26 closes −7.1R PF 0.44 over 30 days, losing both sides; ema_pullback 3 closes −1.0R (the edge watchdog read PF 0.10 over 15 closes on 15-10); fvg_retrace 2 closes −1.9R. Measured on the bot's own closes (origin bot_*) across the five enabled accounts, 16-09 → 16-10. Earlier note (19-09, 90 days): Historical evidence measured 19-09-2026 (90 days, all accounts): fib_618_fade PF 0.62/49 closes, ema_pullback 0.10/14, rsi_meanrev 0.22/8, vp_value 0.61/18, vwap_trend 0.70/30, va_breakout 0/3, fvg_retrace 0/1, donchian_breakout 1.09/29, rsi2_reversion 1.13/31, cup_handle 1 close; fib_confluence PF 2.72/26. The 20-09 retirement was superseded by owner approval 28-09 to arm all intraday strategies. Past performance is not a trading guarantee; existing risk limits and future guard disarms remain in force.",
   "_trial": {
     "tsmom_long": [
       "46130058"
@@ -28,15 +29,14 @@
     "fib_618_fade:restore-20260928",
     "cup_handle:restore-20260928",
     "inv_cup_handle:restore-20260928",
-    "ema_pullback:restore-20260928",
     "donchian_breakout:restore-20260928",
     "rsi_meanrev:restore-20260928",
-    "vwap_trend:restore-20260928",
     "vp_value:restore-20260928",
     "rsi2_reversion:restore-20260928",
     "fib_confluence:restore-20260928",
     "va_breakout:restore-20260928",
-    "fvg_retrace:restore-20260928"
+    "rsi_meanrev:setb-20261016",
+    "va_breakout:setb-20261016"
   ],
   "_reseed_all_note": "One-time owner-approved rearm per enabled account; never continuously reasserted after guard or human disarm."
 }

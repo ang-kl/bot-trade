@@ -342,8 +342,14 @@ test('one account model: the hardcoded-account configs declare every account', (
   // record turned, but because its only producer (scan_dispatch) is retired
   // in lib/entry-producers.js, and principle 6 forbids showing a strategy
   // armed that no producer can trade. The armed set is `_trial` alone.
-  assert.deepEqual(pins._all, pins._reseed_all.map(x => x.split(':')[0]), 'each intraday arm is issued once on every enabled account')
-  assert.deepEqual(pins._off, [], 'the prior blanket off order is superseded')
+  // Claude · № 15,229 16-Oct (owner: "Set B: literal top 6" after № 15,228; claude-builder):
+  // `_all` is the armed set, `_off` the three the 30-day rank cut; every
+  // `_reseed_all` token names an armed strategy, and the two re-arm tokens
+  // (setb-20261016) sit beside the spent restore-20260928 ones.
+  assert.deepEqual([...new Set(pins._reseed_all.map(x => x.split(':')[0]))].sort(), [...pins._all].sort(), 'every reseed token names an armed strategy and every armed strategy has one')
+  assert.deepEqual(pins._off.map(x => x.split(':')[0]), ['vwap_trend', 'ema_pullback', 'fvg_retrace'], 'the 16-10 owner order: Set B')
+  assert.ok(pins._off.every(x => /:setb-20261016$/.test(x)), 'each OFF carries a fresh seed token (Codex round 1 on #1392)')
+  assert.deepEqual(pins._off.map(x => x.split(':')[0]).filter(k => pins._all.includes(k)), [], 'nothing is both armed and off')
   assert.deepEqual(Object.keys(pins).filter(k => /^\d+$/.test(k)), [], 'no account ids as keys in the pins file')
   assert.deepEqual(Object.keys(pins._trial), ['tsmom_long'])
   assert.equal(pins._trial.tsmom_long.length, 1, 'one trial account')
