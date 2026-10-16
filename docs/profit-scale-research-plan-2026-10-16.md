@@ -9,40 +9,51 @@ names its data source, its instrument in the repo, and the decision it feeds. Th
 
 Profit per month = Σ over trades of (R realised × risk per trade in the account's own currency). Both factors are
 measured on the five accounts' 271 closed trades since 16 September (ledger export of 16-10 00:4xZ; `net_pnl` and
-`realised_rr` from the broker's deals). **Money is never pooled across currencies** (Codex round 1): 42993489 and
+`realised_rr` from the broker's deals). **The bot's own stream is selected by `origin`** (Codex round 3):
+`cleanBotOrigin()` in `agent/lib/trade-origin.js` — `bot_market_dispatch` (181) and `bot_pending_fill` (43), 224
+trades — never by `source`, because `reconciler.js:811` stamps an adopted position `autopilot` when its label looks
+like ours; the 47 others (23 reconciler-adopted, 22 manual, 2 unknown) are reported apart and never enter an
+expectancy or a routing decision. **Money is never pooled across currencies** (Codex round 1): 42993489 and
 43097342 are SGD accounts, 46130058, 46979908 and 47790949 USD accounts (the broker's asset list, read through
 `depositCurrencies` on 16-10), so every money figure below is per currency; R is the only currency-free unit and
 the only one pooled across all five.
 
 | factor | measured | source |
 |---|---|---|
-| R per trade | mean −0.06R, median −0.05R; win rate 48 %; average win +0.66R, average loss −0.72R; profit factor in R 0.85 | `trades.realised_rr`, 269 rows with R |
-| trades ≥ 2R | 4 of 269 | same |
-| trades at the initial stop (≤ −0.9R) | 59 of 269; 148 of 271 closes are broker stop fills | `trades.close_reason` |
-| risk per trade, USD accounts (189 trades) | median 36 USD, quartiles 19–88, max 960 (= net_pnl ÷ realised_rr, 175 rows with a usable R) | derived; per account below |
-| risk per trade, SGD accounts (82 trades) | median 4.8 SGD, quartiles 3.4–6.7, max 1,011 (79 rows) | derived; per account below |
-| hold | median 4.1 h, upper quartile 23 h | `trades.hold_duration_ms` |
+| R per trade, own stream (224 trades) | mean −0.06R, median +0.01R; win rate 50 %; average win +0.61R, average loss −0.73R; profit factor in R 0.84 (all 271 incl. adopted/manual: mean −0.06R, PF 0.85) | `trades.realised_rr`, 222 own rows with R |
+| trades ≥ 2R | 3 of 222 own (4 of 269 overall) | same |
+| trades at the initial stop (≤ −0.9R) | 46 of 222 own (59 of 269 overall); 148 of 271 closes are broker stop fills | `trades.close_reason` |
+| risk per trade, own stream, USD accounts (152 trades) | median 36 USD, quartiles 18–53, max 308 — GROSS basis: gross_pnl ÷ realised_rr on 143 rows with a usable R; costs (commission, swap) modelled apart: −237 USD over the 152 (net −31 USD, gross +206) | derived; per account below |
+| risk per trade, own stream, SGD accounts (72 trades) | median 4.6 SGD, quartiles 3.3–5.3, max 20 (69 rows); costs −19 SGD over the 72 (net −35, gross −16) | derived; per account below |
+| hold, own stream | median 2.4 h (4.1 h over all 271) | `trades.hold_duration_ms` |
 
-| account | currency | n | net (own currency) | median risk (own currency) | ΣR |
-|---|---|---|---|---|---|
-| 42993489 (live) | SGD | 8 | +17 | 0.7 | +1.3 |
-| 43097342 | SGD | 74 | +1,541 | 4.8 | −1.3 |
-| 46130058 | USD | 99 | −136 | 35.5 | −10.9 |
-| 46979908 | USD | 29 | −10 | 1.5 | −3.1 |
-| 47790949 | USD | 61 | −1,777 | 92.2 | −1.3 |
+The risk unit is derived on the GROSS basis (Codex round 3): `realisedRR` (`services/trade-consistency.js:72`) is the
+price move over the original stop distance, while `net_pnl` is after commission and swap, so `net ÷ R` is not the
+amount risked and a small R turns the cost into a spurious large "risk" (the earlier max of 1,011 was that artefact).
+The exact unit — filled size × stop distance × the instrument's value per point — is step 1's to compute from the
+ledger; gross ÷ R is the approximation used here and labelled so.
+
+| account | currency | own n | own net (own currency) | own median gross risk | own ΣR | adopted + manual n / net |
+|---|---|---|---|---|---|---|
+| 42993489 (live) | SGD | 5 | 0 | 0.1 | 0.0 | 3 / +17 |
+| 43097342 | SGD | 67 | −34 | 4.7 | −2.6 | 7 / +1,575 |
+| 46130058 | USD | 91 | +90 | 35.0 | −9.6 | 8 / −226 |
+| 46979908 | USD | 26 | −8 | 1.4 | −3.0 | 3 / −2 |
+| 47790949 | USD | 35 | −113 | 92.4 | +2.1 | 26 / −1,664 |
 
 Two readings follow directly. **The expectancy is zero or below**: at any size, more trades of the same stream add
-noise, not profit. **The size is tens of dollars**: at a median 36 USD of risk on the USD accounts (4.8 SGD on the SGD
-accounts), a trade that pays +1R pays 36 USD or 4.8 SGD — the "single dollars, tens, hundreds" the owner describes is
-the risk unit, not the strategy. The largest single contributors are not the bot's own stream: the index class's
-result is one externally opened JPN225 long adopted by the reconciler on 43097342 (+1,602 SGD, 1.6R); the energy
-class's loss is NATGAS longs (−990 USD adopted on 47790949; the bot's own NATGAS longs −615 USD over 16 trades on the
-USD accounts and −2 SGD over 10 on the SGD accounts).
+noise, not profit. **The size is tens of dollars**: at a median 36 USD of gross risk on the USD accounts (4.6 SGD on
+the SGD accounts), a trade that pays +1R pays 36 USD or 4.6 SGD — the "single dollars, tens, hundreds" the owner
+describes is the risk unit, not the strategy. The largest single contributors are not the bot's own stream at all:
+the adopted and manual trades net +1,593 SGD on the SGD accounts (one externally opened JPN225 long adopted by the
+reconciler on 43097342, +1,602 SGD, 1.6R) and −1,892 USD on the USD accounts (NATGAS long adopted on 47790949,
+−990 USD, among them); the bot's own NATGAS longs are −615 USD over 15 trades on the USD accounts and −2 SGD over
+10 on the SGD accounts. The own stream itself nets −31 USD and −35 SGD over the 30 days.
 
 Thousands a month needs both factors at once, in this order: a positive, proven R per trade first (e.g. +0.3R mean
 over ≥ 30 trades of a cell, lower bound above zero), then a risk unit sized to the account (e.g. 1–2 % of a 10,000
 USD account is 100–200 USD; the same rule in SGD on the SGD accounts). 0.3R × 150 USD × 60 trades a month ≈ 2,700
-USD. 0 R × 36 USD × 190 trades = 0. The
+USD. 0 R × 36 USD × 150 trades = 0. The
 second factor without the first multiplies losses by the same ratio — which is why size comes last below.
 
 ## 1. Decompose the P&L (where the money comes from and goes)
@@ -55,15 +66,22 @@ second factor without the first multiplies losses by the same ratio — which is
   risk IN THAT ACCOUNT'S DEPOSIT CURRENCY (an account belongs to one currency, so a per-account row never mixes;
   class/strategy/side rollups are per currency, never summed across SGD and USD — Codex round 2), share of that
   money held by the top three trades, share of losses at the initial stop.
-- **Output**: the cells where the bot's OWN stream (source autopilot/preopen) is positive in R with n ≥ 10, and the
-  cells where it loses; adopted/manual trades reported apart (they are the owner's, not the system's).
+- **Output**: the cells where the bot's OWN stream — selected by `cleanBotOrigin(origin)`, never by `source`
+  (Codex round 3) — is positive in R with n ≥ 10, and the cells where it loses; adopted/manual trades reported apart
+  (they are the owner's, not the system's), `source` kept as a reporting dimension only. The risk unit per trade is
+  computed exactly here: filled size × original stop distance × the instrument's value per point, in the account's
+  currency; costs (commission, swap) as their own columns, never folded into the risk.
 - **Decision it feeds**: which cells go into the class-routing policy (today's blocks rest on n 8–12), which cells
   the evidence gate should arm, and what "robust" means in numbers.
 
 ## 2. Exit counterfactuals (what the same entries would have paid)
 
 - **Data**: the stored aftermath bars of every closed bot trade (`trade_postmortems.bars_json`, closed bars only
-  since #1382), the entry, stop and target as sent.
+  since #1382), the entry, stop and target as sent. **Cohort reconciliation first** (Codex round 3):
+  `replayablePopulation()` (`exit-counterfactual.js:78`) inner-joins `trade_postmortems`, and `runLossPostmortems()`
+  writes no postmortem for a zero-net close, so the replay's `considered` count is not "every closed bot trade";
+  the step reconciles the replay cohort against all clean closes (by `origin`), reports the closes without a window
+  and resolves or labels them before any exit rule is selected.
 - **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`; rules in
   `agent/config/research.json`: `trailR`, `tpR`, `followThroughR`, `exitAtMeanPeriod`, `maxDays`), the bootstrap
   lower bound (`tick-replay-sim expectancyLowerR`). **The exit replay has no holdout today** (Codex round 1):
@@ -174,8 +192,9 @@ order; no new native code.
 1. Sources of the figures: the five accounts' trade exports of 16-10 00:4xZ (`trades` rows; `net_pnl` and
    `realised_rr` from the broker's deals through the ledger), the broker's instrument tree (classes), the repo's own
    configuration files for the limits and bars named; each account's deposit currency from the broker's asset list
-   (`depositCurrencies`, 16-10). *Self-derived*: the risk-per-trade derivation (net_pnl ÷ realised_rr, 254 of 271
-   rows, per currency), the illustrative arithmetic in §0, the step order.
-2. Population: every closed trade of the five accounts since 16-09 (271), all sources; adopted and manual trades
-   are reported apart, not excluded.
+   (`depositCurrencies`, 16-10); the bot's own stream by `origin` (`cleanBotOrigin`, trade-origin.js). *Self-derived*:
+   the gross-basis risk approximation (gross_pnl ÷ realised_rr, 212 of 224 own rows, per currency), the illustrative
+   arithmetic in §0, the step order.
+2. Population: every closed trade of the five accounts since 16-09 (271): 224 own by `origin`, 47 adopted/manual
+   reported apart, not excluded.
 3. Live check: Not Applicable — a planning document; each step it proposes carries its own live check when built.
