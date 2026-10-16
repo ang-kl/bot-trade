@@ -8,9 +8,11 @@ names its data source, its instrument in the repo, and the decision it feeds. Th
 ## 0. The arithmetic, measured
 
 GROSS profit per month = Σ over trades of (R realised × gross risk per trade in the account's own currency); NET
-profit per month = that sum − Σ (commission + swap) per trade. The two are not the same sign on this book: the USD
+profit per month = that sum + Σ (commission + swap) per trade, the ledger's SIGNED columns (`broker-history-import.js`
+computes `net_pnl = gross + swap + commission`; a charge is negative, so the signed sum is ADDED, never subtracted as a
+magnitude — +206 + (−237) = −31, not +443; Codex round 8). The two are not the same sign on this book: the USD
 own stream reads +206 gross, −237 of costs, −31 net. Every cell ranking (steps 1 and 4) and every sizing scenario
-(step 6) therefore uses NET R (`net_pnl ÷ gross risk`) or subtracts the modelled costs explicitly; a cell that is
+(step 6) therefore uses NET R (`net_pnl ÷ gross risk`) or adds the modelled signed costs explicitly; a cell that is
 gross-positive and net-negative is never promoted (Codex round 6). Both factors are
 measured on the five accounts' 271 closed trades since 16 September (ledger export of 16-10 00:4xZ; `net_pnl` and
 `realised_rr` from the broker's deals). **The bot's own stream is selected by `origin`** (Codex round 3):
@@ -90,13 +92,18 @@ second factor without the first multiplies losses by the same ratio — which is
   long-held trade whose early holding period was clipped (the `bar window clipped` honesty guard at :593), while
   `replayablePopulation()` admits any non-empty `bars_json`; `replayExit()` then starts at the first remaining bar
   and can miss an earlier stop or target — a false counterfactual, not a missing window. The reconciliation
-  checks that each window's first bar is at or before the entry (`bars[0].t <= opened_at + 2 × tf`) and either
+  checks that each window's first bar SPANS the entry — bar timestamps are opens, so `bars[0].t <= opened_at <
+  bars[0].t + tf` (no later tolerance: a first bar one or two intervals after the entry can hide a stop or target in
+  the gap; Codex round 8) — and either
   re-fetches the row from the entry or excludes it, counted as `clipped`, before any rule is scored.
 - **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`, called with `?stop=initial`:
   the broker's first-held stop, `broker_sl_initial`, the denominator `realised_rr` uses; the route's default
   `stop=recorded` maps through `exit-counterfactual-extended.js stopOf()` to the proposal's `sl_price`, which after a
   re-anchored fill is the wrong stop and can turn a stop-out into a truncated trade — rows without `broker_sl_initial`
-  take the route's documented fallback and are counted apart; Codex round 6; rules in
+  are NOT silently mixed in: `stopOf()` substitutes `sl_price` without a count, and the route reports only the
+  aggregate stop basis, so the cohort is pre-filtered to rows with `broker_sl_initial` (the fallback rows listed
+  separately with their count) or the route is extended to return the fallback count before any figure is read
+  (Codex rounds 6 and 8); rules in
   `agent/config/research.json`: `trailR`, `tpR`, `followThroughR`, `exitAtMeanPeriod`, `maxDays`), the bootstrap
   lower bound (`tick-replay-sim expectancyLowerR`). **The exit replay has no holdout today** (Codex round 1):
   `trainFraction` lives under `barForm.validation` and only `bar-form-research-core.js` calls
@@ -170,11 +177,16 @@ second factor without the first multiplies losses by the same ratio — which is
 - **Data**: the R stream of the robust cells (steps 1–4), the account balances, the limits in force per account —
   `perTradeRiskPct`, `maxRiskCapPct`, the tiered daily cap (`dailyLossFloorUsd`, `dailyLossTierAtUsd`,
   `dailyLossTierSmallPct`, `dailyLossTierLargePct`, the flat `dailyLossLimit` it replaces), `equityStopPct`,
-  `maxNotionalXBalance` — read as each account's EFFECTIVE values (`GET /state/config?account=`: global plus the
+  `maxNotionalXBalance` — read as each account's EFFECTIVE values (`GET /state/risk-config?account=`, the route that
+  merges the defaults with the global and account overlays; `GET /state/config` carries the watchlist and armed
+  status, not the risk knobs — Codex round 8: global plus the
   account's overlay), not the code defaults (Codex round 5) — including `perTradeRiskUsd` (an absolute override under
   which `riskBudgetUsd` ignores the percentage) and `drawdownDeriskFactor` (the live sizing path halves later budgets
   after the 24-hour loss trigger). The replay applies both in chronological order; a scenario that omits them is
-  labelled constant-risk, not engine-equivalent (Codex round 7).
+  labelled constant-risk, not engine-equivalent (Codex round 7). On the two SGD accounts a `perTradeRiskUsd`
+  override cannot be applied without a rate: `riskBudgetUsd` compares it with a USD-converted ceiling while the replay
+  output is native SGD, so those accounts either obtain a sourced historical USD/SGD series or are labelled
+  constant-percentage scenarios that do not apply the USD override (Codex round 8).
 - **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
   and maximum drawdown in NET R and IN THE ACCOUNT'S DEPOSIT CURRENCY — the modelled commission and swap are subtracted
   at the replayed size, scaled with the lots, never dropped (Codex round 6) — (SGD on 42993489 and 43097342, USD on the other
@@ -207,7 +219,7 @@ second factor without the first multiplies losses by the same ratio — which is
 | Longs and shorts are judged apart | PF by side per cell | № 10,884 measured longs PF 0.47 vs shorts 1.77 — re-measured in step 1 | a side below 1.0 PF at n ≥ 30 is routed out |
 | Losses are capped before they compound | daily loss cap hits; equity stop | `dailyLossLimit`, `equityStopPct` (owner's numbers) | cap honoured on every account; each hit logged with its trades |
 | Size follows evidence, never the other way | risk unit per account vs the cell's lower bound | step 6 | risk per trade reads the configured unit; no override without a record |
-| Adopted and manual trades are the owner's | source split in every report | step 1 | reports show own/adopted/manual apart |
+| Adopted and manual trades are the owner's | ownership by `origin` (`cleanBotOrigin`) in every report; `source` kept as a reporting dimension only (the reconciler can stamp an adopted position `autopilot`; Codex round 8) | step 1 | reports show own/adopted/manual apart by origin |
 | Every exclusion is a record | routed-out and vetoed candidates per day | class-routing view; decision log | counts present; zero unexplained skips |
 
 ## 8. What the owner decides first (§ 14,730, still open)
