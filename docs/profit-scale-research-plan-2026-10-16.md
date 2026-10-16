@@ -59,7 +59,7 @@ second factor without the first multiplies losses by the same ratio — which is
 ## 1. Decompose the P&L (where the money comes from and goes)
 
 - **Data**: `trades` joined to `analyses` (strategy, timeframe, side, source, account), the broker class from the
-  cached instrument tree (lib/asset-class.js), `realised_rr`, `net_pnl`, `commission`, `hold_duration_ms`,
+  cached instrument tree (`agent/lib/asset-class.js`, `classOfSymbol` — #1390's deliverable, not on main until it merges; the only class reader on main today is the heuristic `categoriseSymbol` in `lib/sessions.js`, which maps 8 indices and is a fallback, not the source; Codex round 4), `realised_rr`, `net_pnl`, `commission`, `hold_duration_ms`,
   `close_reason`. Period: every closed trade since 16-09, then rolling 30 days.
 - **Instrument**: a read-only route or report (the shape of `GET /state/performance-populations` and
   `/state/watchlist-stats`), one row per (class, strategy, side, account, source): n, ΣR, mean R, Σ money and median
@@ -81,7 +81,13 @@ second factor without the first multiplies losses by the same ratio — which is
   `replayablePopulation()` (`exit-counterfactual.js:78`) inner-joins `trade_postmortems`, and `runLossPostmortems()`
   writes no postmortem for a zero-net close, so the replay's `considered` count is not "every closed bot trade";
   the step reconciles the replay cohort against all clean closes (by `origin`), reports the closes without a window
-  and resolves or labels them before any exit rule is selected.
+  and resolves or labels them before any exit rule is selected. **Incomplete windows are excluded too** (Codex
+  round 4): `runLossPostmortems()` caps its fetch at 400 bars (`loss-postmortem.js:562`) and knowingly keeps an old,
+  long-held trade whose early holding period was clipped (the `bar window clipped` honesty guard at :593), while
+  `replayablePopulation()` admits any non-empty `bars_json`; `replayExit()` then starts at the first remaining bar
+  and can miss an earlier stop or target — a false counterfactual, not a missing window. The reconciliation
+  checks that each window's first bar is at or before the entry (`bars[0].t <= opened_at + 2 × tf`) and either
+  re-fetches the row from the entry or excludes it, counted as `clipped`, before any rule is scored.
 - **Instrument**: the existing exit-replay engine (`GET /state/exit-counterfactual`; rules in
   `agent/config/research.json`: `trailR`, `tpR`, `followThroughR`, `exitAtMeanPeriod`, `maxDays`), the bootstrap
   lower bound (`tick-replay-sim expectancyLowerR`). **The exit replay has no holdout today** (Codex round 1):
@@ -150,8 +156,11 @@ second factor without the first multiplies losses by the same ratio — which is
   `dailyLossLimit`, `equityStopPct`, `maxNotionalXBalance`).
 - **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
   and maximum drawdown in R and IN THE ACCOUNT'S DEPOSIT CURRENCY (SGD on 42993489 and 43097342, USD on the other
-  three; no conversion — none is sourced; Codex round 2), days the daily loss cap would have stopped trading, the
-  Kelly fraction from the
+  three; no conversion — none is sourced; Codex round 2), days the daily loss cap would have stopped trading — on the
+  USD accounts only: the cap is defined in USD at runtime (`dailyLossLimit` 300 and `dailyLossFloorUsd` 200 in
+  `risk.js`, native P&L converted through `accountCurrencyConversion`), so an SGD replay cannot count cap days
+  without a sourced historical USD/SGD rate; the statistic is omitted for 42993489 and 43097342 and said so, rather
+  than compared at an unsourced rate (Codex round 4) — the Kelly fraction from the
   measured win rate and payoff (today f* = 0.48 − 0.52 ÷ (0.66 ÷ 0.72) < 0 — negative: no size is right until the
   expectancy is positive).
 - **Output**: the risk unit per account that keeps the drawdown inside the owner's capital-preservation numbers.
