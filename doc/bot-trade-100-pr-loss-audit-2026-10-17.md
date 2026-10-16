@@ -257,13 +257,20 @@ TLDR · № 15,082 · 17-10’26 · Independent loss and 100-PR audit
 ---
 
 - §13 · **Evidence package.**
-  - `attachment-manifest.json`: file paths, sizes and SHA-256 hashes.
+  - `README.md`: portable offline reproduction instructions and package boundaries.
+  - `attachment-manifest.json`: original PDF provenance, bundled text paths and SHA-256 hashes.
+  - Five extracted statement `.txt` inputs are bundled beside the reconciliation script.
+  - Original PDFs are not bundled; their names, sizes and hashes identify the owner's source uploads.
   - `statement-reconciliation.json`: normalized deals, exact balances, totals and snapshot comparison.
   - `reconcile_statements.py`: reproducible decimal reconciliation.
   - `pr-window.json`: exact 100 merges and interleaved direct commits.
   - `100-pr-ledger.csv` and `100-pr-ledger.md`: every PR, purpose, changed files and gate record.
   - `prs/<number>/`: original API metadata, review comments, checks, merged diff and production diff.
+  - Each of the 100 PRs has both diff files bundled, including an empty production diff for documentation-only changes.
   - `checks-at-merge.json`: timestamps evaluated at merge, not only latest check status.
   - `boundary-empty-body-probe.json`: bounded offline reproduction and its limitation.
   - `public-health.json`: public deployment observation; no private trading claims.
-  - Audit files live outside the application checkout. No PR or repository modification was created.
+  - The initial audit generated files outside the application checkout; publication PR #1395 adds the report, ledger and ZIP to `doc/`.
+  - No application code or production trading state changes with this publication.
+  - Publication correction, PR #1395: the archive now includes the statement inputs and all PR diffs;
+    scripts resolve files relative to their own location. The dated audit findings and trading calculations are unchanged.
