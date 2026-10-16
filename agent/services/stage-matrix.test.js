@@ -393,9 +393,11 @@ test('strategy-pin seed: restored intraday keys rearm once on all enabled accoun
   const ids = Object.keys(cfg).filter(k => /^\d+$/.test(k))
   assert.deepEqual(ids, [], 'no hardcoded account ids as keys (principle 9)')
   // 28-09 owner restoration supersedes the 20-09 blanket retirement.
-  assert.deepEqual([...cfg._all].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long')].sort(), '_all: the owner restored all intraday strategies')
-  assert.deepEqual(cfg._off, [], '_off: prior blanket retirement superseded')
-  assert.deepEqual(cfg._reseed_all.map(s => s.split(':')[0]).sort(), [...cfg._all].sort(), 'fresh one-time rearm for existing accounts')
+  // Claude · № 15,229 16-Oct (owner: "Set B: literal top 6" after № 15,228; claude-builder): the 16-10
+  // order cuts three of the 28-09 restoration to `_off`; `_all` is the rest.
+  assert.deepEqual([...cfg._all].sort(), [...STRATEGY_KEYS.filter(k => k !== 'tsmom_long' && !cfg._off.includes(k))].sort(), '_all: every intraday strategy the 16-10 order keeps armed')
+  assert.deepEqual(cfg._off, ['vwap_trend', 'ema_pullback', 'fvg_retrace'], '_off: the 16-10 owner order (Set B) — Claude · № 15,229 16-Oct')
+  assert.deepEqual([...new Set(cfg._reseed_all.map(s => s.split(':')[0]))].sort(), [...cfg._all].sort(), 'every reseed token names an armed strategy (the setb-20261016 re-arms sit beside the spent restore-20260928 tokens)')
   assert.deepEqual(Object.keys(cfg._trial), ['tsmom_long'], '_trial: the momentum book only')
   assert.equal(cfg._trial.tsmom_long.length, 1, 'one account per system on trial (07-09 P5 reconciled with P9 in the note)')
   assert.match(cfg._trial_note, /2026-12-19/, 'the trial names its checkpoint date')
@@ -440,8 +442,11 @@ test('shipped pins restore every intraday strategy while the momentum trial stay
   for (const id of ['111', '222']) {
     assert.ok(r.off.includes(`${id}:tsmom_long`), `${id}: tsmom_long switched OFF (on trial elsewhere)`)
     assert.equal(armedTradeKeys(db, getState, id).has('tsmom_long'), false)
-    assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), true)
+    // 16-10 order (Set B): vwap_trend is in `_off`, so the historic ON pin is switched OFF on every account.
+    assert.ok(r.off.includes(`${id}:vwap_trend`), `${id}: vwap_trend switched OFF (16-10 _off)`)
+    assert.equal(armedTradeKeys(db, getState, id).has('vwap_trend'), false)
     assert.equal(armedTradeKeys(db, getState, id).has('donchian_breakout'), true)
+    assert.equal(armedTradeKeys(db, getState, id).has('rsi_meanrev'), true, 'the setb-20261016 token re-arms rsi_meanrev once')
   }
   for (const id of ['111', '222', TRIAL_ID]) {
     // The new owner order restores fib_confluence to every enabled account.
@@ -470,18 +475,43 @@ test('a later enabled account receives the intraday order and only the named mom
 test('seed-once preserves later intraday guard disarms and the momentum trial disarm', () => {
   const db = withAccounts(initDB(':memory:'), ['111', TRIAL_ID])
   setState(db, 'enabled_strategies_json', JSON.stringify(['vwap_trend']))
-  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: true, accountId: '111' }, io)
+  // Sample strategy donchian_breakout (vwap_trend is in `_off` since the 16-10 order).
+  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'trade', on: true, accountId: '111' }, io)
   seedShipped(db)
-  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), true)
+  assert.equal(armedTradeKeys(db, getState, '111').has('donchian_breakout'), true)
   // A guard disarms it after the one-time rearm; the next boot leaves it off.
-  setStage(db, { kind: 'strategy', key: 'vwap_trend', stage: 'trade', on: false, accountId: '111' }, io)
+  setStage(db, { kind: 'strategy', key: 'donchian_breakout', stage: 'trade', on: false, accountId: '111' }, io)
   const b = seedShipped(db)
-  assert.ok(!b.applied.includes('111:vwap_trend:restore-20260928'), 'the ON order was spent on the first boot')
-  assert.equal(armedTradeKeys(db, getState, '111').has('vwap_trend'), false, 'the later guard disarm stands')
+  assert.ok(!b.applied.includes('111:donchian_breakout:restore-20260928'), 'the ON order was spent on the first boot')
+  assert.equal(armedTradeKeys(db, getState, '111').has('donchian_breakout'), false, 'the later guard disarm stands')
   // a guard disarms the trial cell: held across the next boot (the seed-once rule)
   setStage(db, { kind: 'strategy', key: 'tsmom_long', stage: 'trade', on: false, accountId: TRIAL_ID }, io)
   const c = seedShipped(db)
   assert.ok(c.held.includes(`${TRIAL_ID}:tsmom_long:trial`), 'a post-seed disarm of the trial cell stands')
+})
+
+test('16-10 Set B: the setb-20261016 tokens re-arm rsi_meanrev and va_breakout ONCE on an account whose 28-09 seed was spent and whose guard disarmed them (Claude · № 15,229 16-Oct)', () => {
+  // Production shape: the 28-09 restoration was applied and spent; the
+  // adaptive breaker then disarmed rsi_meanrev (0058, 14-10, loss streak 8).
+  const db = withAccounts(initDB(':memory:'), ['111'])
+  setState(db, 'enabled_strategies_json', JSON.stringify(['donchian_breakout']))
+  const shipped = JSON.parse(readFileSync(new URL('../config/strategy-pins.json', import.meta.url), 'utf8'))
+  const prior = join(mkdtempSync(join(tmpdir(), 'pins-prior-')), 'pins.json')
+  writeFileSync(prior, JSON.stringify({ ...shipped, _all: [...shipped._all, ...shipped._off], _off: [], _reseed_all: shipped._reseed_all.filter(t => !/:setb-/.test(t)).concat(shipped._off.map(k => `${k}:restore-20260928`)) }))
+  seedStrategyPinsFromConfig(db, io, { file: prior })
+  for (const k of ['rsi_meanrev', 'va_breakout']) setStage(db, { kind: 'strategy', key: k, stage: 'trade', on: false, accountId: '111', actor: 'adaptive_breaker', reason: 'loss streak' }, io)
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
+  const r = seedShipped(db)
+  assert.ok(r.applied.includes('111:rsi_meanrev:setb-20261016'), 'the new token re-arms rsi_meanrev once')
+  assert.ok(r.applied.includes('111:va_breakout:setb-20261016'), 'the new token re-arms va_breakout once')
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), true)
+  assert.equal(armedTradeKeys(db, getState, '111').has('va_breakout'), true)
+  assert.ok(r.off.includes('111:vwap_trend'), 'and vwap_trend goes OFF by the same order')
+  // A guard disarms again: the next boot leaves it off (seed-once).
+  setStage(db, { kind: 'strategy', key: 'rsi_meanrev', stage: 'trade', on: false, accountId: '111', actor: 'adaptive_breaker', reason: 'loss streak' }, io)
+  const again = seedShipped(db)
+  assert.ok(!again.applied.some(t => t.startsWith('111:rsi_meanrev')), 'the token was spent; the later disarm stands')
+  assert.equal(armedTradeKeys(db, getState, '111').has('rsi_meanrev'), false)
 })
 
 test('_off and _trial on a scratch file: an explicit per-id ON wins over _off; _trial switches the strategy OFF on every account it does not name; malformed blocks are named and skipped', () => {
