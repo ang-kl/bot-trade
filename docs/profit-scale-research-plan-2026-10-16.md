@@ -51,8 +51,10 @@ second factor without the first multiplies losses by the same ratio — which is
   cached instrument tree (lib/asset-class.js), `realised_rr`, `net_pnl`, `commission`, `hold_duration_ms`,
   `close_reason`. Period: every closed trade since 16-09, then rolling 30 days.
 - **Instrument**: a read-only route or report (the shape of `GET /state/performance-populations` and
-  `/state/watchlist-stats`), one row per (class, strategy, side, account, source): n, ΣR, mean R, ΣUSD, median risk,
-  share of ΣUSD held by the top three trades, share of losses at the initial stop.
+  `/state/watchlist-stats`), one row per (class, strategy, side, account, source): n, ΣR, mean R, Σ money and median
+  risk IN THAT ACCOUNT'S DEPOSIT CURRENCY (an account belongs to one currency, so a per-account row never mixes;
+  class/strategy/side rollups are per currency, never summed across SGD and USD — Codex round 2), share of that
+  money held by the top three trades, share of losses at the initial stop.
 - **Output**: the cells where the bot's OWN stream (source autopilot/preopen) is positive in R with n ≥ 10, and the
   cells where it loses; adopted/manual trades reported apart (they are the owner's, not the system's).
 - **Decision it feeds**: which cells go into the class-routing policy (today's blocks rest on n 8–12), which cells
@@ -73,7 +75,12 @@ second factor without the first multiplies losses by the same ratio — which is
 - **Output**: per robust cell, mean R and its lower bound under: the exit as traded, let-run to a fixed R target (2R,
   3R), a trail at kR, an exit at the SMA cross (`exitAtMeanPeriod` is an SMA-cross exit, `exitAtMean: {period}`,
   not a time stop), and — only once a separate replay rule exists for it — a holding-period time stop at the
-  measured median hold (4.1 h). The 4-of-269 count of ≥ 2R trades is the number to move.
+  measured median hold (4.1 h). The 4-of-269 count of ≥ 2R trades is the number to move. **Granularity
+  prerequisite** (Codex round 2): `exit-counterfactual-extended.js` filters by account and strategy and groups by
+  `GROUP_KEYS` = strategy, timeframe, regime, family, gate tag — not by class, side or source — so today it cannot
+  answer "per cell" as step 1 defines a cell; either the class/side/source filters are added to the replay before
+  this step runs, or its results are read at the endpoint's own granularity (strategy × timeframe × regime) and
+  labelled so.
 - **Decision it feeds**: whether an exit-policy change is worth an order (the owner's; no exit change without it).
 
 ## 3. Entry quality (why 22 % of trades die at the initial stop)
@@ -92,7 +99,10 @@ second factor without the first multiplies losses by the same ratio — which is
 
 - **Data**: steps 1–3; the tick-activity measurement (`GET /state/tick-activity`, selected side only) and the
   session calendar for the hour-of-day cut.
-- **Instrument**: the live evidence gate per cell (`GET /state/evidence-gate`), which judges by its OWN persisted
+- **Instrument**: the live evidence gate (`GET /state/evidence-gate`), which decides STRATEGY × ACCOUNT only —
+  `evidenceRows()` aggregates every class and side of a strategy — so it is not a gate per cell as step 1 defines
+  one: the class and side exclusions are the class-routing policy's job (the (class, strategy, side) tokens), and
+  the gate's verdict applies to the strategy on the account (Codex round 2). The gate judges by its OWN persisted
   configuration — defaults 30 closes, net-money PF 1.5 over 90 days, no drawdown check (`services/evidence-gate.js`)
   — not by `agent/config/tick-validation.json`, whose traded bar (30 trades, PF 1.3, 8R drawdown) belongs to the
   tick-validation importer; the plan reads the gate's configuration as the endpoint returns it and names the
@@ -120,8 +130,10 @@ second factor without the first multiplies losses by the same ratio — which is
 
 - **Data**: the R stream of the robust cells (steps 1–4), the account balances, the limits in force (`perTradeRiskPct`,
   `dailyLossLimit`, `equityStopPct`, `maxNotionalXBalance`).
-- **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly USD,
-  maximum drawdown in R and USD, days the daily loss cap would have stopped trading, the Kelly fraction from the
+- **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
+  and maximum drawdown in R and IN THE ACCOUNT'S DEPOSIT CURRENCY (SGD on 42993489 and 43097342, USD on the other
+  three; no conversion — none is sourced; Codex round 2), days the daily loss cap would have stopped trading, the
+  Kelly fraction from the
   measured win rate and payoff (today f* = 0.48 − 0.52 ÷ (0.66 ÷ 0.72) < 0 — negative: no size is right until the
   expectancy is positive).
 - **Output**: the risk unit per account that keeps the drawdown inside the owner's capital-preservation numbers.
