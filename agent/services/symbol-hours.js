@@ -318,7 +318,19 @@ export function epochOfNextIntervalStart(now, timeZone, schedule, startSow) {
       if (w < intended) break
       if (isOpenBySchedule(schedule, sowOfWallEpoch(w))) found = u
     }
-    if (found != null) return found
+    if (found != null) {
+      // Codex round 5 on #1388: the minute walk keeps the start's seconds
+      // offset (02:30:30 → 07:00:30Z), so refine second by second back to the
+      // transition itself, at most one minute.
+      const minuteFound = found
+      for (let k = 1; k <= 60; k++) {
+        const u = minuteFound - k * 1000
+        const w = wallClockEpochMs(u, timeZone)
+        if (w < intended || !isOpenBySchedule(schedule, sowOfWallEpoch(w))) break
+        found = u
+      }
+      return found
+    }
     from = t // no open instant this week: the occurrence is skipped
   }
   return null

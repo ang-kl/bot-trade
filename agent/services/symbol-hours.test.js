@@ -316,3 +316,13 @@ test('nextOpenInfo: a start inside a spring-forward gap opens at the gap boundar
   // Outside a gap the helper is the plain projection.
   assert.equal(epochOfNextIntervalStart(sat, 'UTC', [{ start: 1 * DAY, end: 2 * DAY }], 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
 })
+
+test('nextOpenInfo: a gap-time start that is not minute-aligned still opens at the transition second (Codex round 5 on #1388)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 02:30:30–04:00 New York: the minute walk alone would answer
+  // 07:00:30Z; the schedule is open from the transition at 07:00:00Z.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPSEC', 23, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 30 * 60 + 30, end: 4 * HOUR }]))
+  assert.equal(nextOpenInfo(db, 'GAPSEC', new Date(Date.UTC(2026, 2, 7, 12))).next_open_at, '2026-03-08T07:00:00.000Z')
+})
