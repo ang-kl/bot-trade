@@ -2280,6 +2280,23 @@ Measurement history — each line is a real run of the script, not a claim:
   ledger. Lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting
   them.
+- 2026-10-16 01:20 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the line above (next stamp at least `№ 15,093`),
+  the replies ran on by count through #1388 (the DST next-open projection,
+  six Codex rounds each put to the owner, merged be9f5374 and read back),
+  the report addendum #1389 (two Codex rounds), the quant-playbook reading
+  `№ 15,123`, the watchlist and 30-day-cut answers `№ 15,128` and
+  `№ 15,136`, and the owner's § 15,128 response: A·1 (parity already held
+  at 412 symbols), B·2 (the regime gate on at 00:25Z), the class-routing
+  plan `№ 15,144` with the owner's three answers (the evidence blocks plus
+  NATGAS longs; 8 of 15 slots to tier A; dedupe the five duplicate demo
+  rows — done, 421 = 421 on all four demos, live untouched). One reply in
+  this run was the bare "No response requested." and is counted. The
+  transcript file here holds five text replies after `№ 15,136`; by replies
+  made the count is higher, so the next stamped reply is at least
+  **`№ 15,146`** plus any unstamped line made after this ledger. All lower
+  bounds. The count is by replies, not by stamps. A later re-measure that
+  reads below this line is missing these, not correcting them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

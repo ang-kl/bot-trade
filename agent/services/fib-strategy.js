@@ -18,6 +18,10 @@ import { categoriseSymbol } from '../lib/sessions.js'
 import { nativeOptionsFor } from './scanner-profiles.js'
 import { recordBarFetch, recordStarved } from '../lib/bar-path-counters.js'
 import { premiseFields, premiseTriggerForSignal } from '../lib/premise.js'
+// Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder): class-aware routing at signal
+// selection and class tiers in the rotation (lib/class-routing.js, lib/asset-class.js).
+import { loadClassRouting, isRouted, classPriority } from '../lib/class-routing.js'
+import { classOfSymbol } from '../lib/asset-class.js'
 
 const FRACTAL_WIDTH = 2       // 5-bar fractal (2 bars either side)
 const ZONE_TOLERANCE = 0.05   // +/-5% of leg range around the 61.8% level
@@ -801,9 +805,30 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   // `signal` stays the single winner under the unchanged armed-then-conviction
   // rule, so every existing caller behaves exactly as before. `signals` is the
   // new, wider view.
-  const signals = [...bestByStrategy.values()]
+  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+  // CLASS-AWARE ROUTING, at signal selection: a (strategy, side) the policy
+  // routes out of this symbol's class (or of the symbol itself) is removed
+  // from `signals` here — so the dispatcher, the hot/warm lists and the
+  // pre-order never see it — and kept in `routedOut` with the token that
+  // refused it, so the scan row still records that the setup existed (owner
+  // principle 4: every decision has a reason). The observer above already saw
+  // every evaluation, so native parity is untouched. `opts.classRouting`
+  // null/false turns routing off for a caller (tests); undefined reads the file.
+  const routingPolicy = opts.classRouting !== undefined ? opts.classRouting : loadClassRouting()
+  const assetClass = (typeof opts.classOf === 'function' ? opts.classOf : classOfSymbol)(symbol)
+  const signals = []
+  const routedOut = []
+  for (const cand of bestByStrategy.values()) {
+    const verdict = isRouted(routingPolicy, { cls: assetClass?.cls, symbol, strategy: cand.strategy, bias: cand.bias })
+    if (verdict.ok) { signals.push(cand); continue }
+    routedOut.push({
+      strategy: cand.strategy, bias: cand.bias, timeframe: cand.timeframe ?? null, conviction: cand.conviction ?? 0,
+      entry: cand.entry ?? null, thesis: cand.thesis ?? null, reason: verdict.reason, token: verdict.token,
+      cls: assetClass?.cls ?? 'other', classSource: assetClass?.source ?? 'unknown',
+    })
+  }
   signal = bestOf(signals, armedPredicate(opts))
-  return { symbol, signal, signals, lastPrice, error: null, cupHandleTraces }
+  return { symbol, signal, signals, lastPrice, error: null, cupHandleTraces, routedOut, assetClass }
 }
 
 /**
@@ -823,7 +848,7 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
  * new-setup coverage. Pure and side-effect free for testing.
  * @returns {{ batch: Array, nextCursor: number }}
  */
-export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cursor = 0, prioritySpikeSymbols = [] } = {}) {
+export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cursor = 0, prioritySpikeSymbols = [], classRank = null, prioritySlots = 0, priorityMaxRank = null } = {}) {
   const size = Math.max(1, Math.floor(batchSize) || 15)
   const held = new Set(heldSymbols.map(s => String(s).toUpperCase()))
   const rest = (symbols || []).filter(w => !held.has(String(w.symbol).toUpperCase()))
@@ -837,6 +862,14 @@ export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cur
   // something — identical behaviour to before otherwise.
   const spikeSet = new Set((prioritySpikeSymbols || []).map(s => String(s).toUpperCase()))
   const spikeBoost = spikeSet.size ? rest.filter(w => spikeSet.has(String(w.symbol).toUpperCase())).slice(0, size) : []
+  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+  // CLASS TIERS (owner: "priorities class that are profitable as first to
+  // trade"): with a class rank and a share, the rotation runs in two tiers —
+  // tieredScanBatch below. Without them (no policy, share off, tests) the
+  // path below is exactly the one that ran before.
+  if (typeof classRank === 'function' && Number.isInteger(prioritySlots) && prioritySlots > 0 && Number.isFinite(priorityMaxRank)) {
+    return tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, prioritySlots, priorityMaxRank })
+  }
   if (spikeBoost.length === 0) {
     const start = Math.max(0, Math.floor(cursor) || 0) % rest.length
     const rotated = [...rest.slice(start), ...rest.slice(0, start)]
@@ -860,9 +893,74 @@ export function selectScanBatch(symbols, { heldSymbols = [], batchSize = 15, cur
   }
 }
 
+/**
+ * Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+ * The two-tier rotation. Tier A = symbols whose class priority is at or under
+ * `priorityMaxRank`; tier B = the rest. Every run takes up to `prioritySlots`
+ * from tier A and the remaining slots from tier B, each tier on its own
+ * offset, so a 161-symbol tier A at 8 slots is covered every ~21 runs while a
+ * 252-symbol tier B at 7 slots takes ~36 — the profitable classes are looked
+ * at more often, the rest are still all looked at. A tier short of its share
+ * hands the spare slots to the other, so a run never scans fewer symbols than
+ * the batch allows while either tier has more.
+ *
+ * THE CURSOR IS A RUN COUNTER here, not a symbol index: each tier's start is
+ * `run × its nominal slots` modulo its size, which walks both tiers in
+ * contiguous windows and wraps. The nominal slot counts are fixed by the
+ * batch size (not by this run's spike boost), so a spike run — which takes
+ * fewer rotation slots — leaves the tail of that run's windows to the next
+ * pass rather than shifting every later window; the same trade-off the
+ * one-cursor rotation already makes when the pool changes size. Pure.
+ */
+export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, prioritySlots, priorityMaxRank }) {
+  const boosted = new Set(spikeBoost.map(w => String(w.symbol).toUpperCase()))
+  const pool = rest.filter(w => !boosted.has(String(w.symbol).toUpperCase()))
+  const rank = (w) => { const r = Number(classRank(w)); return Number.isFinite(r) ? r : Infinity }
+  const tierA = pool.filter(w => rank(w) <= priorityMaxRank)
+  const tierB = pool.filter(w => !(rank(w) <= priorityMaxRank))
+  const run = Math.max(0, Math.floor(cursor) || 0)
+  const aNominal = Math.min(prioritySlots, size)
+  const bNominal = size - aNominal
+  const tiers = {
+    tierA: tierA.length, tierB: tierB.length, prioritySlots: aNominal, priorityMaxRank, run,
+    runsPerPassA: tierA.length && aNominal ? Math.ceil(tierA.length / aNominal) : null,
+    runsPerPassB: tierB.length && bNominal ? Math.ceil(tierB.length / bNominal) : null,
+  }
+  const period = Math.max(1, tierA.length) * Math.max(1, tierB.length)
+  const remaining = size - spikeBoost.length
+  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? (run + 1) % period : 0, restCount: pool.length, tiers }
+  let aTake = Math.min(aNominal, remaining, tierA.length)
+  let bTake = Math.min(bNominal, remaining - aTake, tierB.length)
+  aTake = Math.min(tierA.length, aTake + (remaining - aTake - bTake))
+  bTake = Math.min(tierB.length, bTake + (remaining - aTake - bTake))
+  const slice = (list, start, n) => {
+    if (n <= 0 || list.length === 0) return []
+    const s = ((start % list.length) + list.length) % list.length
+    return [...list.slice(s), ...list.slice(0, s)].slice(0, Math.min(n, list.length))
+  }
+  const aStart = tierA.length ? (run * aNominal) % tierA.length : 0
+  const bStart = tierB.length ? (run * bNominal) % tierB.length : 0
+  return {
+    batch: [...spikeBoost, ...slice(tierA, aStart, aTake), ...slice(tierB, bStart, bTake)],
+    nextCursor: (run + 1) % period,
+    restCount: pool.length,
+    tiers,
+  }
+}
+
 export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   const hotThreshold = Number(options.hotThreshold) || 6
+  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+  // One policy read per scan run, shared by the rotation's tiers and every
+  // symbol's signal selection; `options.classRouting` null/false = off.
+  const routingPolicy = options.classRouting !== undefined ? options.classRouting : loadClassRouting()
+  const classOf = typeof options.classOf === 'function' ? options.classOf : classOfSymbol
+  const classShare = routingPolicy && routingPolicy.enabled !== false && routingPolicy.scanShare
+    ? { classRank: (w) => classPriority(routingPolicy, classOf(w?.symbol)?.cls), prioritySlots: routingPolicy.scanShare.prioritySlots, priorityMaxRank: routingPolicy.scanShare.priorityMaxRank }
+    : {}
   const scanOpts = {
+    classRouting: routingPolicy,
+    classOf,
     onEvaluation: options.onEvaluation || null,
     rsiFilter: options.rsiFilter || null,
     vwapFilter: options.vwapFilter || null,
@@ -883,11 +981,12 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   // ALWAYS advance the cursor by that many, so a full book of held positions
   // can never crowd out the hunt (the old batch reserved slots for held
   // symbols first, so holding ≥ batchSize positions froze new-setup coverage).
-  const { batch, nextCursor, restCount } = selectScanBatch(symbols, {
+  const { batch, nextCursor, restCount, tiers = null } = selectScanBatch(symbols, {
     heldSymbols: options.prioritySymbols || [],
     batchSize: Number(options.batchSize) || 15,
     cursor: Number(options.cursor) || 0,
     prioritySpikeSymbols: options.prioritySpikeSymbols || [],
+    ...classShare,
   })
 
   const results = []
@@ -930,15 +1029,36 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     price: sig ? sig.entry : r.lastPrice,
     trade_grade: sig ? (sig.conviction >= hotThreshold ? 'potential' : 'weak') : 'none',
   })
+  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+  // A routed-out candidate is still a row — trade_grade 'routed', the token in
+  // its thesis — so the record shows the setup existed and why it did not
+  // trade; it is kept out of hot/warm and of `signals` below.
+  const routedRowFor = (r, ro) => ({
+    symbol: r.symbol,
+    bias: ro.bias,
+    confidence: ro.conviction ?? 0,
+    thesis: `ROUTED OUT (class ${ro.cls}): ${ro.strategy} ${ro.bias} — ${ro.reason}${ro.thesis ? ` · ${ro.thesis}` : ''}`,
+    strategy: ro.strategy,
+    timeframe: ro.timeframe ?? null,
+    session_fit: 'n/a',
+    trade_at: 'now',
+    price: ro.entry ?? r.lastPrice,
+    trade_grade: 'routed',
+    routed_reason: ro.reason,
+    routed_token: ro.token ?? null,
+    asset_class: ro.cls,
+  })
   const scans = results.flatMap(r => {
     const list = r.signals?.length ? r.signals : (r.signal ? [r.signal] : [])
+    const routed = (r.routedOut || []).map(ro => routedRowFor(r, ro))
     // A symbol with nothing still gets its skip row — the monitor phase
     // resolves open-position prices from these rows and must not lose one.
-    if (!list.length) return [rowFor(r, null)]
+    if (!list.length) return [rowFor(r, null), ...routed]
     // Best first, so anything that reads scans positionally still sees the
     // strongest candidate at the front.
-    return [...list].sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0)).map(sig => rowFor(r, sig))
+    return [...[...list].sort((a, b) => (b.conviction ?? 0) - (a.conviction ?? 0)).map(sig => rowFor(r, sig)), ...routed]
   })
+  const routedOutCount = scans.filter(s => s.trade_grade === 'routed').length
 
   // signals[symbol] stays the single winner — every existing caller keeps its
   // behaviour. signalsByStrategy is the addressable view the analyze phase
@@ -960,8 +1080,8 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
   // repeating it would silently multiply its share of the analyze slots, which
   // is the same starvation this change exists to remove.
   const uniq = (xs) => [...new Set(xs)]
-  const hot = uniq(scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip').map(s => s.symbol))
-  const warmOnly = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip').map(s => s.symbol)
+  const hot = uniq(scans.filter(s => s.confidence >= hotThreshold && s.bias !== 'skip' && s.trade_grade !== 'routed').map(s => s.symbol))
+  const warmOnly = scans.filter(s => s.confidence >= 4 && s.confidence < hotThreshold && s.bias !== 'skip' && s.trade_grade !== 'routed').map(s => s.symbol)
   const warm = uniq(warmOnly).filter(sym => !hot.includes(sym))
 
   // Coverage counts SYMBOLS, not rows — `scans.length` is now rows, and
@@ -972,7 +1092,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     scans,
     hot,
     warm,
-    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scannedSymbols} of ${symbols.length} symbols this run (${scans.length} strategy rows; full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${errors.length ? `, ${errors.length} fetch error(s)` : ''}${deadlineHit ? ' — scan DEADLINE hit, partial batch (broker calls running slow)' : ''}.`,
+    desk_note: `Deterministic 61.8% Fibonacci fade scan — ${scannedSymbols} of ${symbols.length} symbols this run (${scans.length} strategy rows; full watchlist every ~${rounds} run${rounds > 1 ? 's' : ''}), ${hot.length} hot, ${warm.length} warm${routedOutCount ? `, ${routedOutCount} routed out by class` : ''}${tiers ? ` [tiers A ${tiers.tierA}/${tiers.prioritySlots} slots ~${tiers.runsPerPassA} runs, B ${tiers.tierB}/${Math.max(0, (Number(options.batchSize) || 15) - tiers.prioritySlots)} slots ~${tiers.runsPerPassB} runs]` : ''}${errors.length ? `, ${errors.length} fetch error(s)` : ''}${deadlineHit ? ' — scan DEADLINE hit, partial batch (broker calls running slow)' : ''}.`,
     deadlineHit,
     usage: { output_tokens: 0 },
     signals,
@@ -981,6 +1101,7 @@ export async function runFibScan(creds, symbolMap, symbols, options = {}) {
     next_cursor: nextCursor,
     coverage: { scanned: scannedSymbols, total: symbols.length, rows: scans.length },
     rotationRuns: rounds,
+    routing: { enabled: !!(routingPolicy && routingPolicy.enabled !== false), routedOut: routedOutCount, tiers },
     expectedSymbols: selectScanBatch(symbols, { heldSymbols: options.prioritySymbols || [], batchSize: Math.max(1, symbols.length), cursor: 0 }).batch.map(s => s.symbol),
     cupHandleDiagnostics,
   }

@@ -350,6 +350,13 @@ test('one account model: the hardcoded-account configs declare every account', (
   assert.match(pins._trial_note, /checkpoint/)
   assert.equal('demo' in cfg('agent/config/tick-validation.json'), false)
   assert.ok('traded' in cfg('agent/config/tick-validation.json'))
+  // Claude · № 15,144 16-Oct (claude-builder): the class-routing policy keys
+  // on the broker's asset classes and symbol names — never on an account id
+  // or an environment (owner principles 1 and 9).
+  const cr = cfg('agent/config/class-routing.json')
+  assert.deepEqual(Object.keys(cr.classes).filter(k => /^\d+$/.test(k)), [], 'no account ids as class keys')
+  assert.deepEqual(Object.keys(cr.symbols || {}).filter(k => /^\d+$/.test(k)), [], 'no account ids as symbol keys')
+  assert.equal('demo' in cr, false); assert.equal('live' in cr, false); assert.equal('accounts' in cr, false)
 })
 
 test('one account model: the C++ sidecar has no demo/live branch — the only string literal is the recorder header stamp, and nothing compares an environment', () => {

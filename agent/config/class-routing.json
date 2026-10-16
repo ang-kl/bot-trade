@@ -1,0 +1,23 @@
+{
+  "_note": "Claude · № 15,144 16-Oct (owner, after § 15,128: 'B priorities class that are profitable as first to trade due to robust strategies … C·2 Policy, build class-aware routing'; blocks and the 8-of-15 share chosen by the owner after № 15,144; claude-builder). Class = the broker's own asset class (lib/asset-class.js, from the cached instrument tree). priority: the scan tier — classes at or under scanShare.priorityMaxRank take scanShare.prioritySlots of every 15-symbol rotation run ahead of the rest (services/fib-strategy.js selectScanBatch). block: tokens 'strategy', 'strategy:long|short' or '*:long|short' that a class or symbol REFUSES at signal selection (scanSymbolFib): the candidate is recorded as a scan row with trade_grade 'routed' and never reaches the dispatcher. A block-list, not an allow-list: a strategy not named here is routed as before. Evidence (30-day closed trades of the five accounts to 16-10, by broker class/strategy/side; the PR body carries the table): energy va_breakout long 12 trades −9.3R 8% wins; equity rsi_meanrev short 10 −5.3R 10%; equity rsi2_reversion long 8 −3.0R 12%; NATGAS long 25 trades −612 USD across strategies. Cells with n < 6 or ΣR > −2.5R are not blocked. Nothing here changes a strategy, stop, target, lot, account or watchlist; manual orders and the momentum book do not read it. Read-only view: GET /state/class-routing.",
+  "enabled": true,
+  "scanShare": { "prioritySlots": 8, "priorityMaxRank": 3 },
+  "classes": {
+    "crypto":    { "priority": 1, "block": [] },
+    "index":     { "priority": 2, "block": [] },
+    "fx":        { "priority": 2, "block": [] },
+    "metal":     { "priority": 3, "block": [] },
+    "commodity": { "priority": 4, "block": [] },
+    "fx_index":  { "priority": 4, "block": [] },
+    "forward":   { "priority": 4, "block": [] },
+    "perpetual": { "priority": 4, "block": [] },
+    "treasury":  { "priority": 4, "block": [] },
+    "equity":    { "priority": 5, "block": ["rsi_meanrev:short", "rsi2_reversion:long"] },
+    "energy":    { "priority": 5, "block": ["va_breakout:long"] },
+    "etf":       { "priority": 5, "block": [] },
+    "other":     { "priority": 9, "block": [] }
+  },
+  "symbols": {
+    "NATGAS": { "block": ["*:long"] }
+  }
+}

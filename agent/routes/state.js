@@ -5078,6 +5078,22 @@ export default function stateRouter(db) {
     }
   })
 
+  // GET /state/class-routing — Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder).
+  // Read-only: the class-routing policy as the scan reads it
+  // (agent/config/class-routing.json through lib/class-routing.js), every
+  // enabled scan-universe symbol's class with its SOURCE (the broker tree or
+  // the heuristic), the rotation tiers, and the latest scan batch's routed-out
+  // rows. Nothing here writes.
+  router.get('/class-routing', async (_req, res) => {
+    try {
+      const { classRoutingView } = await import('../services/class-routing-view.js')
+      res.set('Cache-Control', 'no-store')
+      res.json(classRoutingView(db))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   router.get('/trail-status', async (req, res) => {
     try {
       const { trailStatusView } = await import('../services/trail-status-view.js')

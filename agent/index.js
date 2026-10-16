@@ -130,6 +130,17 @@ if (!DB_PATH) {
   console.warn('[boot] ⚠⚠⚠ DB_PATH is NOT set — the database lives inside the container and EVERY REDEPLOY WIPES IT (account link, logins, trade history). Attach a Railway Volume at /data and set DB_PATH=/data/agent.db.');
 }
 const db = initDB(resolvedDbPath);
+// Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder):
+// the broker catalogue's asset classes, primed from the cached instrument
+// tree for class-aware routing (lib/asset-class.js); refreshed from the cache
+// every ten minutes and when GET /actions/instrument-tree re-reads the broker.
+try {
+  const { initAssetClasses } = await import('./lib/asset-class.js');
+  const ac = initAssetClasses(db, getState);
+  console.log(`[boot] asset classes: ${ac ? `${ac.symbols} symbols from the broker tree (built ${ac.builtAt})` : 'no cached instrument tree — heuristic classes until GET /actions/instrument-tree runs'}`);
+} catch (err) {
+  console.error(`[boot] asset classes (non-fatal): ${err.message}`);
+}
 // The stop-loss policy (owner 02-10-2026: Opposite trigger, broker-side
 // trailing once profit is locked) is read once at boot and on every config
 // change. Synchronous, before anything can amend: a stored kill switch
