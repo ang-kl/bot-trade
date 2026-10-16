@@ -162,3 +162,167 @@ test('nextOpenInfo: open symbol → open:true; closed → next interval start pr
   const btc = nextOpenInfo(db, 'BTCUSD', sat)
   assert.equal(btc.next_open_at, null)
 })
+
+// Claude · № 15,08x 16-Oct (Codex P2 round 2 on #1382, owner: "book as a
+// follow-up"; claude-builder). Expected instants are the IANA zone's own
+// rules (America/New_York: DST begins Sun 2026-03-08 02:00 local, ends Sun
+// 2026-11-01 02:00 local) applied to a Monday 09:30 local open — Codex's
+// worked example (Fri 2026-03-06 noon → Mon 09:30 is 13:30Z, not 14:30Z).
+const NY_OPEN_MON_0930 = [{ start: 1 * DAY + 9 * HOUR + 30 * 60, end: 1 * DAY + 16 * HOUR }]
+
+test('nextOpenInfo: a DST change between now and the boundary does not shift next_open_at by an hour (spring)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-03-06 12:00 EST (17:00Z); DST starts that Sunday.
+  const friNoonEst = new Date(Date.UTC(2026, 2, 6, 17, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonEst)
+  assert.equal(read.open, false)
+  // Mon 2026-03-09 09:30 EDT = 13:30Z. The wall-clock-seconds projection
+  // (now + delta) read 14:30Z — one hour late, the whole first half of the
+  // 2 h pre-open window lost.
+  assert.equal(read.next_open_at, '2026-03-09T13:30:00.000Z')
+})
+
+test('nextOpenInfo: the autumn change projects the local open to the later UTC instant (fall)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-10-30 12:00 EDT (16:00Z); DST ends that Sunday.
+  const friNoonEdt = new Date(Date.UTC(2026, 9, 30, 16, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonEdt)
+  assert.equal(read.open, false)
+  // Mon 2026-11-02 09:30 EST = 14:30Z (the old projection read 13:30Z —
+  // an hour early, admitting the symbol to the pre-open window an hour soon).
+  assert.equal(read.next_open_at, '2026-11-02T14:30:00.000Z')
+})
+
+test('nextOpenInfo: no transition in between → unchanged projection', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('NYSTOCK', 7, ?, 'America/New_York')`)
+    .run(JSON.stringify(NY_OPEN_MON_0930))
+  // Fri 2026-07-10 12:00 EDT (16:00Z) → Mon 2026-07-13 09:30 EDT = 13:30Z, 69.5 h later.
+  const friNoonJuly = new Date(Date.UTC(2026, 6, 10, 16, 0, 0))
+  const read = nextOpenInfo(db, 'NYSTOCK', friNoonJuly)
+  assert.equal(read.next_open_at, '2026-07-13T13:30:00.000Z')
+  assert.equal(new Date(read.next_open_at).getTime() - friNoonJuly.getTime(), 69.5 * HOUR * 1000)
+})
+
+test('epochOfNextWeekSecond: UTC is the identity projection; a gap-time target never resolves before the gap ends', async () => {
+  const { epochOfNextWeekSecond, wallClockEpochMs } = await import('./symbol-hours.js')
+  const sat = new Date(Date.UTC(2026, 6, 18, 12))
+  assert.equal(epochOfNextWeekSecond(sat, 'UTC', 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+  // Same wall second as now → a full week ahead, never "now".
+  assert.equal(epochOfNextWeekSecond(sat, 'UTC', 6 * DAY + 12 * HOUR), sat.getTime() + 7 * DAY * 1000)
+  // Unknown zone → the UTC fallback secondsIntoWeek also takes.
+  assert.equal(epochOfNextWeekSecond(sat, 'Not/AZone', 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+  // Wall epoch: Sat 2026-03-07 12:00Z is 07:00 EST → wall 07:00 "UTC".
+  const satMar = new Date(Date.UTC(2026, 2, 7, 12))
+  assert.equal(wallClockEpochMs(satMar, 'America/New_York'), Date.UTC(2026, 2, 7, 7))
+  // Sun 2026-03-08 02:30 New York does not exist (02:00 → 03:00). The
+  // documented resolution is the offset read after the gap: 07:30Z
+  // (03:30 EDT), one hour later by the wall clock and not before the
+  // gap's end at 07:00Z. Self-derived: no broker schedule opens inside a
+  // DST gap; this pins the rule, not a broker fact.
+  const inGap = epochOfNextWeekSecond(satMar, 'America/New_York', 2 * HOUR + 30 * 60)
+  assert.ok(inGap >= Date.UTC(2026, 2, 8, 7, 0), 'not before the gap ends')
+  assert.equal(inGap, Date.UTC(2026, 2, 8, 7, 30))
+})
+
+test('nextOpenInfo: an interval starting inside the fall-back repeated hour opens again in the second fold, not a week later (Codex round 1 on #1388)', async () => {
+  const { nextOpenInfo, isSymbolOpenCached } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 01:30–01:45 New York. On 2026-11-01 the clock reads 01:xx twice
+  // (EDT, then EST after 06:00Z).
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('REPEAT', 9, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 1 * HOUR + 30 * 60, end: 1 * HOUR + 45 * 60 }]))
+  // 05:50Z = 01:50 EDT: the first fold's interval has passed …
+  const now = new Date(Date.UTC(2026, 10, 1, 5, 50, 0))
+  const read = nextOpenInfo(db, 'REPEAT', now)
+  assert.equal(read.open, false)
+  // … but the same wall time comes round at 06:30Z (01:30 EST), and the
+  // cached open test agrees at 06:35Z. The wall-clock delta alone pointed to
+  // 8 November.
+  assert.equal(read.next_open_at, '2026-11-01T06:30:00.000Z')
+  assert.equal(isSymbolOpenCached(db, 'REPEAT', new Date(Date.UTC(2026, 10, 1, 6, 35, 0))).open, true)
+  // Before the first fold the first occurrence is the answer (strictly after now).
+  const early = nextOpenInfo(db, 'REPEAT', new Date(Date.UTC(2026, 10, 1, 5, 20, 0)))
+  assert.equal(early.next_open_at, '2026-11-01T05:30:00.000Z')
+})
+
+test('nextOpenInfo: with several starts, the earliest PROJECTED instant wins, not the smallest wall-clock delta (Codex round 2 on #1388)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 01:30–01:45 and 02:00–03:00 New York. At 05:50Z on 2026-11-01
+  // (01:50 EDT) the 02:00 start is 10 wall-clock minutes away and the 01:30
+  // start a week — but the clock falls back at 06:00Z, so 01:30 EST comes
+  // round at 06:30Z and 02:00 EST only at 07:00Z.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('TWOSTARTS', 11, ?, 'America/New_York')`)
+    .run(JSON.stringify([
+      { start: 1 * HOUR + 30 * 60, end: 1 * HOUR + 45 * 60 },
+      { start: 2 * HOUR, end: 3 * HOUR },
+    ]))
+  const read = nextOpenInfo(db, 'TWOSTARTS', new Date(Date.UTC(2026, 10, 1, 5, 50, 0)))
+  assert.equal(read.open, false)
+  assert.equal(read.next_open_at, '2026-11-01T06:30:00.000Z')
+  // Outside the repeated hour the two selections agree: Monday 2026-07-13
+  // 00:00Z (Sunday 20:00 EDT) → the next start is Sunday 2026-07-19 01:30 EDT = 05:30Z.
+  const plain = nextOpenInfo(db, 'TWOSTARTS', new Date(Date.UTC(2026, 6, 13, 0, 0, 0)))
+  assert.equal(plain.next_open_at, '2026-07-19T05:30:00.000Z')
+})
+
+test('projection reuses one formatter per zone and kind — not one per wall-clock read (Codex round 3 on #1388)', async () => {
+  const { epochOfNextWeekSecond, nextOpenInfo } = await import('./symbol-hours.js')
+  const Real = Intl.DateTimeFormat
+  let built = 0
+  // Count constructions; the cache may already hold the zone from earlier
+  // tests in this file, so the bound is on NEW constructions during the run.
+  Intl.DateTimeFormat = function (...args) { built++; return new Real(...args) }
+  try {
+    const now = new Date(Date.UTC(2026, 2, 6, 17))
+    for (let i = 0; i < 100; i++) epochOfNextWeekSecond(now, 'Europe/Berlin', 1 * DAY + 9 * HOUR)
+    const db = initDB(':memory:')
+    db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('DE', 13, ?, 'Europe/Berlin')`)
+      .run(JSON.stringify([1, 2, 3, 4, 5].map(d => ({ start: d * DAY + 9 * HOUR, end: d * DAY + 17.5 * HOUR }))))
+    for (let i = 0; i < 100; i++) nextOpenInfo(db, 'DE', new Date(Date.UTC(2026, 2, 7, 12)))
+  } finally {
+    Intl.DateTimeFormat = Real
+  }
+  // Two kinds (week clock, wall clock) for one new zone: at most two
+  // constructions across 100 + 500 projections, each of which reads the wall
+  // clock about ten times. Uncached this is several thousand.
+  assert.ok(built <= 2, `formatters built: ${built}`)
+})
+
+test('nextOpenInfo: a start inside a spring-forward gap opens at the gap boundary; an interval wholly inside the gap is skipped (Codex round 4 on #1388)', async () => {
+  const { nextOpenInfo, epochOfNextIntervalStart } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // DST begins Sun 2026-03-08 02:00 New York: 02:00–03:00 local does not exist.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPSTART', 21, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 30 * 60, end: 4 * HOUR }]))
+  const sat = new Date(Date.UTC(2026, 2, 7, 12))
+  // The schedule is open from the first instant after the gap (03:00 EDT =
+  // 07:00Z), which is where isSymbolOpenCached already reads open; the
+  // shifted start (07:30Z) would have been 30 minutes late.
+  assert.equal(nextOpenInfo(db, 'GAPSTART', sat).next_open_at, '2026-03-08T07:00:00.000Z')
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPONLY', 22, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 15 * 60, end: 2 * HOUR + 45 * 60 }]))
+  // No instant of that Sunday reads inside 02:15–02:45, so that occurrence
+  // is skipped: the next opening is the following Sunday, 02:15 EDT = 06:15Z.
+  assert.equal(nextOpenInfo(db, 'GAPONLY', sat).next_open_at, '2026-03-15T06:15:00.000Z')
+  // Outside a gap the helper is the plain projection.
+  assert.equal(epochOfNextIntervalStart(sat, 'UTC', [{ start: 1 * DAY, end: 2 * DAY }], 1 * DAY), sat.getTime() + 36 * HOUR * 1000)
+})
+
+test('nextOpenInfo: a gap-time start that is not minute-aligned still opens at the transition second (Codex round 5 on #1388)', async () => {
+  const { nextOpenInfo } = await import('./symbol-hours.js')
+  const db = initDB(':memory:')
+  // Sunday 02:30:30–04:00 New York: the minute walk alone would answer
+  // 07:00:30Z; the schedule is open from the transition at 07:00:00Z.
+  db.prepare(`INSERT INTO symbol_hours (symbol, symbol_id, schedule_json, tz) VALUES ('GAPSEC', 23, ?, 'America/New_York')`)
+    .run(JSON.stringify([{ start: 2 * HOUR + 30 * 60 + 30, end: 4 * HOUR }]))
+  assert.equal(nextOpenInfo(db, 'GAPSEC', new Date(Date.UTC(2026, 2, 7, 12))).next_open_at, '2026-03-08T07:00:00.000Z')
+})

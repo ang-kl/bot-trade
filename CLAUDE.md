@@ -2262,6 +2262,24 @@ Measurement history — each line is a real run of the script, not a claim:
   ledger. Lower bounds. The count is by replies, not by stamps. A later
   re-measure that reads below this line is missing these, not correcting
   them.
+- 2026-10-15 23:05 UTC, **same remote container, PARTIAL corpus** (the §1
+  write-back rule): from the line above (next stamp at least `№ 14,532`),
+  the replies ran on by count through the NASA-5/6 work, the stop-loss
+  investigation (№ 14,7xx), PR-1 #1374 (premise check, six Codex rounds),
+  PR-2 #1375 and #1376 (Chandelier from +0.5R), PR-3 #1377, the two demo
+  runs (20-trade orders; 5 opened of 65), PR-A #1378, PR-B/PR-D/PR-E
+  combined as #1382 (one open-market scan rule with the 2 h pre-open window,
+  no weekend switch; forming bars never stored; tick-activity measurement),
+  #1385 (FX-day fixtures), #1383 (the boundary marker) and the owner's loss
+  investigation report (#1387, docs). Two replies in this run were the bare
+  "No response requested." and are counted. The last stamp before this
+  ledger is **`№ 15,092`** (07:01 SGT 16-10; the transcript file after a
+  compaction holds only 37 text replies, so the count is by replies made:
+  10 after `№ 15,081`, two of them not captured as text). The next stamped
+  reply is at least **`№ 15,093`** plus any unstamped line made after this
+  ledger. Lower bounds. The count is by replies, not by stamps. A later
+  re-measure that reads below this line is missing these, not correcting
+  them.
 The jump from ~1,814 (where the in-context count had reached) to 3,403 is not
 a correction of the script — it is the cost of the sessions that were never
 counted. Scan all sessions, not one.

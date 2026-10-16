@@ -28,12 +28,28 @@ const WEEK_SECONDS = 7 * 24 * 3600
  * `timeZone`. DST-correct: uses Intl to read the wall-clock weekday/time in
  * that zone. Pure apart from Intl; pass 'UTC' in tests for determinism.
  */
+// Codex round 3 on #1388: an Intl.DateTimeFormat costs ~0.1 ms to build and
+// the fold-aware projection reads the wall clock about ten times per
+// schedule start, for every start of every closed symbol (300 symbols × 8
+// starts measured 1,045 ms uncached against 133 ms cached), so formatters
+// are built once per zone and kind and reused. Unknown zones are not
+// cached (the constructor throws; the callers fall back to UTC).
+const FORMATTERS = new Map()
+function zoneFormatter(timeZone, kind, options) {
+  const key = `${kind}|${timeZone}`
+  let fmt = FORMATTERS.get(key)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone, ...options, hour12: false })
+    FORMATTERS.set(key, fmt)
+  }
+  return fmt
+}
+
 export function secondsIntoWeek(now, timeZone = 'UTC') {
   let parts
   try {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-      timeZone, weekday: 'short', hour: '2-digit', minute: '2-digit',
-      second: '2-digit', hour12: false,
+    const fmt = zoneFormatter(timeZone, 'week', {
+      weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
     })
     parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]))
   } catch {
@@ -241,17 +257,147 @@ export function nextOpenInfo(db, symbol, now = new Date()) {
   try { row = db.prepare(`SELECT schedule_json, tz FROM symbol_hours WHERE symbol = ?`).get(s) } catch { row = null }
   let schedule = []
   try { schedule = JSON.parse(row?.schedule_json || '[]') } catch { schedule = [] }
-  const sow = secondsIntoWeek(now, row?.tz || 'UTC')
+  const tz = row?.tz || 'UTC'
+  // Claude · № 15,08x 16-Oct (Codex P2 on #1382, owner: "book as a
+  // follow-up"; claude-builder): the interval start is a WALL-CLOCK
+  // second-into-week in the schedule's zone. Adding the wall-clock delta
+  // to the epoch is one hour off whenever a DST transition in that zone
+  // falls between `now` and the boundary (Fri noon New York → Mon 09:30
+  // projected 14:30Z instead of 13:30Z across the March change), so each
+  // boundary is projected as a local instant and then converted.
+  // Codex round 2 on #1388: choosing the start by the smallest wall-clock
+  // delta and projecting only that one is wrong inside a fall-back
+  // repeated hour (starts at 01:30 and 02:00, now 01:50 EDT: 02:00 has
+  // the smaller wall delta but the repeated 01:30 comes first by the
+  // clock), so EVERY start is projected and the earliest epoch wins.
   let best = null
   for (const iv of schedule) {
     const a = Number(iv.startSecond ?? iv.start)
     if (!Number.isFinite(a)) continue
-    const delta = ((a - sow) % WEEK_SECONDS_TOTAL + WEEK_SECONDS_TOTAL) % WEEK_SECONDS_TOTAL
-    if (delta > 0 && (best == null || delta < best)) best = delta
+    const t = epochOfNextIntervalStart(now, tz, schedule, a)
+    if (t != null && (best == null || t < best)) best = t
   }
   return {
     open: false,
-    next_open_at: best != null ? new Date(now.getTime() + best * 1000).toISOString() : null,
+    next_open_at: best != null ? new Date(best).toISOString() : null,
     source: 'broker',
   }
+}
+
+/** Seconds into the week of a WALL epoch (local fields read as UTC). */
+function sowOfWallEpoch(wallMs) {
+  const d = new Date(wallMs)
+  return ((d.getUTCDay() * 24 + d.getUTCHours()) * 60 + d.getUTCMinutes()) * 60 + d.getUTCSeconds()
+}
+
+/**
+ * The next instant the schedule OPENS at interval start `startSow`, by
+ * membership. Ordinarily the projected start itself. Codex round 4 on
+ * #1388: a start inside a spring-forward gap has no instant whose wall
+ * clock reads it; the projection then lands one gap-length late (03:30
+ * for a 02:30 start), while `isOpenBySchedule` already reads open from the
+ * gap's end (03:00). So a gap start resolves to the first instant after the
+ * gap at which the schedule is open, to the minute, and an interval that
+ * lies wholly inside the gap has no opening that week: null, skipped.
+ */
+export function epochOfNextIntervalStart(now, timeZone, schedule, startSow) {
+  let from = now instanceof Date ? now.getTime() : Number(now)
+  // At most two occurrences are examined: a gap swallows one week's
+  // occurrence at most, and the next week's start reads normally.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t = epochOfNextWeekSecond(from, timeZone, startSow)
+    const wallT = wallClockEpochMs(t, timeZone)
+    const intended = wallT - sowOfWallEpoch(wallT) * 1000 + Number(startSow) * 1000
+    if (wallT === intended) return t
+    // Gap: step back from the shifted start while the wall clock is still
+    // past the transition, keeping the earliest open instant found.
+    let found = null
+    for (let k = 0; k <= 180; k++) {
+      const u = t - k * 60_000
+      const w = wallClockEpochMs(u, timeZone)
+      if (w < intended) break
+      if (isOpenBySchedule(schedule, sowOfWallEpoch(w))) found = u
+    }
+    if (found != null) {
+      // Codex round 5 on #1388: the minute walk keeps the start's seconds
+      // offset (02:30:30 → 07:00:30Z), so refine second by second back to the
+      // transition itself, at most one minute.
+      const minuteFound = found
+      for (let k = 1; k <= 60; k++) {
+        const u = minuteFound - k * 1000
+        const w = wallClockEpochMs(u, timeZone)
+        if (w < intended || !isOpenBySchedule(schedule, sowOfWallEpoch(w))) break
+        found = u
+      }
+      return found
+    }
+    from = t // no open instant this week: the occurrence is skipped
+  }
+  return null
+}
+
+/**
+ * Epoch ms of the local wall-clock fields of `t` in `timeZone`, read as if
+ * they were UTC (the "wall epoch"). wallEpoch(t) − t is the zone's offset
+ * at t. Unknown zone → UTC (the same fallback secondsIntoWeek takes, so the
+ * two readings stay consistent).
+ */
+export function wallClockEpochMs(t, timeZone = 'UTC') {
+  const d = t instanceof Date ? t : new Date(t)
+  let parts
+  try {
+    const fmt = zoneFormatter(timeZone, 'wall', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    })
+    parts = Object.fromEntries(fmt.formatToParts(d).map(p => [p.type, p.value]))
+  } catch {
+    return d.getTime()
+  }
+  let hour = parseInt(parts.hour, 10)
+  if (hour === 24) hour = 0
+  return Date.UTC(
+    parseInt(parts.year, 10), parseInt(parts.month, 10) - 1, parseInt(parts.day, 10),
+    hour, parseInt(parts.minute, 10), parseInt(parts.second, 10), d.getUTCMilliseconds(),
+  )
+}
+
+/**
+ * The epoch ms of the next instant (strictly after `now`, at most one week
+ * ahead) at which the wall clock in `timeZone` reads `targetSow` seconds
+ * into the week. DST-aware: the target is formed on the local calendar and
+ * converted back through the zone's offset AT THE TARGET, not at `now`.
+ * A target that falls inside a spring-forward gap (a local time that does
+ * not exist) resolves to the offset read after the gap — one hour later by
+ * the wall clock, never earlier than the gap's end. A target inside a
+ * fall-back overlap resolves to its first occurrence.
+ */
+export function epochOfNextWeekSecond(now, timeZone = 'UTC', targetSow) {
+  const nowMs = now instanceof Date ? now.getTime() : Number(now)
+  const sow = secondsIntoWeek(new Date(nowMs), timeZone)
+  const W = WEEK_SECONDS_TOTAL
+  let delta = ((Number(targetSow) - sow) % W + W) % W
+  if (delta === 0) delta = W
+  const wallTarget = wallClockEpochMs(nowMs, timeZone) + delta * 1000
+  const offsetAt = (t) => wallClockEpochMs(t, timeZone) - t
+  const t1 = wallTarget - offsetAt(nowMs)
+  // Codex round 1 on #1388: when the zone falls back, a target inside the
+  // repeated hour occurs TWICE, and the wall-clock delta (measured from
+  // now's first fold) can point a week ahead while the same wall time comes
+  // round again within the hour. So both folds are tried — this week's wall
+  // target and the same target one week back — against the zone's offsets
+  // on either side of the transition, and the earliest instant strictly
+  // after `now` whose wall clock reads the target wins.
+  const offsets = new Set([offsetAt(nowMs), offsetAt(t1), offsetAt(nowMs + W * 1000)])
+  let best = null
+  for (const wall of [wallTarget - W * 1000, wallTarget]) {
+    for (const off of offsets) {
+      const t = wall - off
+      if (t > nowMs && wallClockEpochMs(t, timeZone) === wall && (best == null || t < best)) best = t
+    }
+  }
+  if (best != null) return best
+  // No instant reads the target: it sits inside a spring-forward gap.
+  const t2 = wallTarget - offsetAt(t1)
+  return Math.max(t1, t2)
 }
