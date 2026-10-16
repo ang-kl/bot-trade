@@ -48,3 +48,13 @@ test('provenEdgeSymbolsFrom: only positive, traded combos count', () => {
   assert.deepEqual([...s], ['EURUSD'])
   assert.deepEqual([...provenEdgeSymbolsFrom(null)], []) // no baseline → empty
 })
+
+test('a class-routed row never ranks its symbol (Codex round 2 on #1390): the surviving row decides', () => {
+  // NATGAS: surviving rsi2 short at 5, then the routed donchian long at 9 (bias skip, trade_grade routed).
+  const scans = [
+    { symbol: 'EURUSD', confidence: 7, strategy: 'ema_pullback', bias: 'long' },
+    { symbol: 'NATGAS', confidence: 5, strategy: 'rsi2_reversion', bias: 'short' },
+    { symbol: 'NATGAS', confidence: 9, strategy: 'donchian_breakout', bias: 'skip', routed_bias: 'long', trade_grade: 'routed' },
+  ]
+  assert.deepEqual(rankHotSymbols(scans, ['NATGAS', 'EURUSD']), ['EURUSD', 'NATGAS'], 'EURUSD (7) ahead of NATGAS (5), not behind a routed 9')
+})

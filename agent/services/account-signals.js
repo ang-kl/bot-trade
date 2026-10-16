@@ -63,7 +63,12 @@ export function accountSignals(db, snapshot, { accountId = 'all', lastScanAt = n
       if (!stageVerdicts.has(stageKey)) stageVerdicts.set(stageKey, tradeStageGate(db, getState, { strategy: sc.strategy, filtersFailed: sc.filters_failed, accountId: id }))
       const gate = stageVerdicts.get(stageKey)
       const symbolGate = symbolAllowsStrategy(item, sc.strategy, armed)
-      const reason = off ? `${off} off for this account` : !gate.ok ? gate.reason : !symbolGate.ok ? symbolGate.reason : null
+      // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder): a candidate the scan
+      // routed out by class never reaches the dispatcher on ANY account, so
+      // that global fact is the reason shown before this account's own
+      // switches — scan_only, with the token that refused it.
+      const routed = sc.trade_grade === 'routed' ? (sc.routed_reason || 'routed out by class-routing.json') : null
+      const reason = routed ? routed : off ? `${off} off for this account` : !gate.ok ? gate.reason : !symbolGate.ok ? symbolGate.reason : null
       const receipt = entries.get(key(sc, id))
       rows.push({ ...sc, account_id: id,
         accountLabel: `${a.is_live ? 'Live' : 'Demo'} ${a.trader_login || id} · ${id}`,

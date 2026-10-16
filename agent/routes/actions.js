@@ -3800,6 +3800,9 @@ export default function actionsRouter(db, deps = {}) {
       const tree = buildInstrumentTree(ac.assetClass || [], cat.symbolCategory || [], sym.symbol || [])
       const payload = { ...tree, builtAt: new Date().toISOString() }
       setState(db, CACHE_KEY, JSON.stringify(payload))
+      // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder):
+      // the routing's class map takes the fresh catalogue at once.
+      try { const { primeAssetClasses } = await import('../lib/asset-class.js'); primeAssetClasses(payload) } catch { /* the map refreshes from the cache within ten minutes */ }
       res.json(payload)
     } catch (err) {
       res.status(502).json({ error: err.message })

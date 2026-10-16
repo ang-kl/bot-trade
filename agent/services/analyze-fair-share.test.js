@@ -147,3 +147,14 @@ test('fairShareLine reads as one sentence and survives an empty result', () => {
 test('the state key is stable — a rename would silently reset every clock', () => {
   assert.equal(LAST_ANALYZED_KEY, 'strategy_last_analyzed_json')
 })
+
+test('a class-routed row never attributes a slot (Codex round 2 on #1390): the surviving strategy gets the turn', () => {
+  const scans = [
+    { symbol: 'NATGAS', confidence: 5, strategy: 'rsi2_reversion', bias: 'short' },
+    { symbol: 'NATGAS', confidence: 9, strategy: 'donchian_breakout', bias: 'skip', routed_bias: 'long', trade_grade: 'routed' },
+    { symbol: 'EURUSD', confidence: 7, strategy: 'ema_pullback', bias: 'long' },
+  ]
+  const r = fairShareSlots(scans, ['NATGAS', 'EURUSD'], { slots: 2, lastAnalyzed: {}, now: 1_000 })
+  assert.deepEqual(r.byStrategy.map(b => [b.strategy, b.symbol, b.conviction]).sort(), [['ema_pullback', 'EURUSD', 7], ['rsi2_reversion', 'NATGAS', 5]])
+  assert.ok(!r.byStrategy.some(b => b.strategy === 'donchian_breakout'), 'the routed strategy never holds a slot')
+})
