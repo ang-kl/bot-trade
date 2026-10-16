@@ -723,6 +723,19 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
   const cupHandleOn = fns.includes(computeCupHandleSignal)
   const invCupHandleOn = fns.includes(computeInvCupHandleSignal)
   const cupHandleTraces = []
+  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
+  // CLASS-AWARE ROUTING, at signal selection. `opts.classRouting` null/false
+  // turns routing off for a caller (tests); undefined reads the file.
+  // Claude · № 15,184 16-Oct (Codex round 4 on #1390, owner: "Round 4: fix the P1 and both P2s, then merge when green"; claude-builder)
+  // Each candidate is routed BEFORE it competes for its strategy's slot: a
+  // strategy whose strongest candidate is a blocked side on one timeframe
+  // keeps its allowed candidate from another timeframe (Codex round 4 P1).
+  // Blocked candidates compete among themselves by the same rule, so the
+  // record keeps one routed row per (symbol, strategy) — the setup existed
+  // and why it did not trade (owner principle 4) — not one per timeframe.
+  const routingPolicy = opts.classRouting !== undefined ? opts.classRouting : loadClassRouting()
+  const assetClass = (typeof opts.classOf === 'function' ? opts.classOf : classOfSymbol)(symbol)
+  const blockedByStrategy = new Map()
   for (const timeframe of scanTfs) {
     const entry = cacheEntry(symbolId, timeframe)
     const bars = entry?.bars || []
@@ -793,40 +806,31 @@ export async function scanSymbolFib(creds, symbol, symbolId, opts = {}) {
     } : null
     for (const cand of pickAllSignals(fns, closed, timeframe, opts, barsFor, observe)) {
       cand._preferred = isPreferred(timeframe)
-      const prev = bestByStrategy.get(cand.strategy)
+      // A (strategy, side) the policy routes out of this symbol's class (or of
+      // the symbol itself) never reaches `signals` — the dispatcher, hot/warm
+      // and the pre-order never see it — and competes only for the routed
+      // record. The observer above already saw every evaluation, so native
+      // parity is untouched.
+      const verdict = isRouted(routingPolicy, { cls: assetClass?.cls, symbol, strategy: cand.strategy, bias: cand.bias })
+      const table = verdict.ok ? bestByStrategy : blockedByStrategy
+      const prev = table.get(cand.strategy)
       // Per strategy: a preferred (armed) timeframe wins outright; within the
       // same preference tier, conviction decides.
       const better = !prev
         || (cand._preferred && !prev._preferred)
         || (cand._preferred === prev._preferred && (cand.conviction ?? 0) > (prev.conviction ?? 0))
-      if (better) bestByStrategy.set(cand.strategy, cand)
+      if (better) table.set(cand.strategy, verdict.ok ? cand : { ...cand, _routed: verdict })
     }
   }
   // `signal` stays the single winner under the unchanged armed-then-conviction
   // rule, so every existing caller behaves exactly as before. `signals` is the
-  // new, wider view.
-  // Claude · № 15,144 16-Oct (owner: "B priorities class … C·2 build class-aware routing" after § 15,128; claude-builder)
-  // CLASS-AWARE ROUTING, at signal selection: a (strategy, side) the policy
-  // routes out of this symbol's class (or of the symbol itself) is removed
-  // from `signals` here — so the dispatcher, the hot/warm lists and the
-  // pre-order never see it — and kept in `routedOut` with the token that
-  // refused it, so the scan row still records that the setup existed (owner
-  // principle 4: every decision has a reason). The observer above already saw
-  // every evaluation, so native parity is untouched. `opts.classRouting`
-  // null/false turns routing off for a caller (tests); undefined reads the file.
-  const routingPolicy = opts.classRouting !== undefined ? opts.classRouting : loadClassRouting()
-  const assetClass = (typeof opts.classOf === 'function' ? opts.classOf : classOfSymbol)(symbol)
-  const signals = []
-  const routedOut = []
-  for (const cand of bestByStrategy.values()) {
-    const verdict = isRouted(routingPolicy, { cls: assetClass?.cls, symbol, strategy: cand.strategy, bias: cand.bias })
-    if (verdict.ok) { signals.push(cand); continue }
-    routedOut.push({
-      strategy: cand.strategy, bias: cand.bias, timeframe: cand.timeframe ?? null, conviction: cand.conviction ?? 0,
-      entry: cand.entry ?? null, thesis: cand.thesis ?? null, reason: verdict.reason, token: verdict.token,
-      cls: assetClass?.cls ?? 'other', classSource: assetClass?.source ?? 'unknown',
-    })
-  }
+  // new, wider view; `routedOut` is the class-routing record (one per strategy).
+  const signals = [...bestByStrategy.values()]
+  const routedOut = [...blockedByStrategy.values()].map(cand => ({
+    strategy: cand.strategy, bias: cand.bias, timeframe: cand.timeframe ?? null, conviction: cand.conviction ?? 0,
+    entry: cand.entry ?? null, thesis: cand.thesis ?? null, reason: cand._routed.reason, token: cand._routed.token,
+    cls: assetClass?.cls ?? 'other', classSource: assetClass?.source ?? 'unknown',
+  }))
   signal = bestOf(signals, armedPredicate(opts))
   return { symbol, signal, signals, lastPrice, error: null, cupHandleTraces, routedOut, assetClass }
 }
@@ -922,15 +926,22 @@ export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, pri
   const aStart = tierA.length ? (raw % TIER_CURSOR_STRIDE) % tierA.length : 0
   const bStart = tierB.length ? Math.floor(raw / TIER_CURSOR_STRIDE) % tierB.length : 0
   const encode = (a, b) => a + b * TIER_CURSOR_STRIDE
-  const aNominal = Math.min(prioritySlots, size)
+  // Claude · № 15,184 16-Oct (Codex round 4 on #1390, owner: "Round 4: fix the P1 and both P2s, then merge when green"; claude-builder)
+  // A non-empty tier B always keeps at least one slot of a batch of two or
+  // more, whatever share the policy names (a share at or above the batch size
+  // would exclude tier B for good — Codex round 4).
+  const aNominal = tierB.length && size >= 2 ? Math.min(prioritySlots, size - 1) : Math.min(prioritySlots, size)
   const bNominal = size - aNominal
-  const tiers = {
-    tierA: tierA.length, tierB: tierB.length, prioritySlots: aNominal, priorityMaxRank, aStart, bStart,
-    runsPerPassA: tierA.length && aNominal ? Math.ceil(tierA.length / aNominal) : null,
-    runsPerPassB: tierB.length && bNominal ? Math.ceil(tierB.length / bNominal) : null,
-  }
   const remaining = size - spikeBoost.length
-  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? encode(aStart, bStart) : 0, restCount: pool.length, tiers }
+  const tiersOf = (aTook, bTook) => ({
+    tierA: tierA.length, tierB: tierB.length, prioritySlots: aNominal, priorityMaxRank, aStart, bStart,
+    // The pass length is priced from what each tier ACTUALLY takes this run
+    // (a spike boost lowers the take): scanner-work prices every instrument's
+    // nextDue from rotationRuns (Codex round 4).
+    runsPerPassA: tierA.length && aTook ? Math.ceil(tierA.length / aTook) : null,
+    runsPerPassB: tierB.length && bTook ? Math.ceil(tierB.length / bTook) : null,
+  })
+  if (remaining <= 0 || pool.length === 0) return { batch: spikeBoost, nextCursor: pool.length ? encode(aStart, bStart) : 0, restCount: pool.length, tiers: tiersOf(0, 0) }
   let aTake = Math.min(aNominal, remaining, tierA.length)
   let bTake = Math.min(bNominal, remaining - aTake, tierB.length)
   aTake = Math.min(tierA.length, aTake + (remaining - aTake - bTake))
@@ -947,7 +958,7 @@ export function tieredScanBatch(rest, spikeBoost, size, cursor, { classRank, pri
     batch: [...spikeBoost, ...slice(tierA, aStart, aTake), ...slice(tierB, bStart, bTake)],
     nextCursor: encode(aNext, bNext),
     restCount: pool.length,
-    tiers,
+    tiers: tiersOf(aTake, bTake),
   }
 }
 

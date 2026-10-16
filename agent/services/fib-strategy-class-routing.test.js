@@ -162,3 +162,21 @@ test('rotationRuns is the SLOWER tier\'s pass under the share (Codex round 3 on 
   assert.equal(r.rotationRuns, 7)
   assert.match(r.desk_note, /full watchlist every ~7 runs/)
 })
+
+test('a side token blocks that side on one timeframe without dropping the strategy\'s allowed side on another (Codex round 4 P1 on #1390)', async (t) => {
+  fresh(t)
+  // rsi_meanrev: a short at 8 on 4h (blocked for equity), a long at 6 on 1h (allowed).
+  const compute = (b, tf) => (!b.length ? null : tf === '4h'
+    ? { strategy: 'rsi_meanrev', bias: 'short', timeframe: '4h', entry: b.at(-1).c, sl: b.at(-1).c + 2, tp1: b.at(-1).c - 6, conviction: 8, thesis: 'short 4h' }
+    : tf === '1h' ? { strategy: 'rsi_meanrev', bias: 'long', timeframe: '1h', entry: b.at(-1).c, sl: b.at(-1).c - 2, tp1: b.at(-1).c + 6, conviction: 6, thesis: 'long 1h' } : null)
+  compute.minBars = 50
+  const policy = compilePolicy({ classes: { equity: { priority: 5, block: ['rsi_meanrev:short'] } } })
+  const strategies = [{ key: 'rsi_meanrev', compute, minBars: 50 }]
+  const equity = () => ({ cls: 'equity', source: 'test' })
+  const r = await scanSymbolFib(CREDS, 'AAPL.US', 61, { strategies, classRouting: policy, classOf: equity })
+  assert.deepEqual(r.signals.map(c => [c.strategy, c.bias, c.timeframe]), [['rsi_meanrev', 'long', '1h']], 'the allowed side survives')
+  assert.equal(r.signal.bias, 'long')
+  assert.deepEqual(r.routedOut.map(c => [c.strategy, c.bias, c.timeframe, c.token]), [['rsi_meanrev', 'short', '4h', 'rsi_meanrev:short']], 'the blocked side is the routed record, once per strategy')
+  const off = await scanSymbolFib(CREDS, 'AAPL.US', 62, { strategies, classRouting: null, classOf: equity })
+  assert.equal(off.signal.bias, 'short', 'routing off: the stronger short wins as before'); assert.deepEqual(off.routedOut, [])
+})

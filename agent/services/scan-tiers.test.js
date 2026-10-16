@@ -79,6 +79,25 @@ test('a symbol boosted on EVERY run never hides a tail row (Codex round 3 on #13
     cursor = r.nextCursor
   }
   assert.equal(seenB.size, 29, 'every tier-B symbol scanned within 12 boosted runs (28-row pool at 6 rows a run)')
+  const r = selectScanBatch(s, { batchSize: 15, cursor: 0, prioritySpikeSymbols: ['B5'], ...SHARE })
+  assert.equal(r.tiers.runsPerPassB, 5, 'priced from the 6 rows actually taken: ceil(28 / 6), not ceil(28 / 7) = 4 (Codex round 4)')
+  assert.equal(r.tiers.runsPerPassA, 3)
+})
+
+test('a share at or above the batch size still leaves a non-empty tier B one slot (Codex round 4 on #1390)', () => {
+  const s = [...mk('A', 40, 1), ...mk('B', 10, 5)]
+  const seenB = new Set(); let cursor = 0
+  for (let run = 0; run < 10; run++) {
+    const r = selectScanBatch(s, { batchSize: 15, cursor, classRank: rankOf, prioritySlots: 15, priorityMaxRank: 3 })
+    assert.equal(r.batch.length, 15)
+    assert.equal(r.batch.filter(b => b.symbol.startsWith('B')).length, 1, 'exactly one tier-B row a run')
+    assert.equal(r.tiers.prioritySlots, 14, 'the share is clamped to batch − 1')
+    for (const b of r.batch) if (b.symbol.startsWith('B')) seenB.add(b.symbol)
+    cursor = r.nextCursor
+  }
+  assert.equal(seenB.size, 10, 'every tier-B symbol reached')
+  const onlyA = selectScanBatch(mk('A', 40, 1), { batchSize: 15, cursor: 0, classRank: rankOf, prioritySlots: 15, priorityMaxRank: 3 })
+  assert.equal(onlyA.batch.length, 15, 'with no tier B the whole batch goes to tier A')
 })
 
 test('a rank the policy cannot read (NaN/undefined) is tier B, never tier A', () => {
