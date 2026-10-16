@@ -335,7 +335,7 @@ Run offline from the checked-out source (no database, no broker, no application 
 | Correlation shifts | yes | no | no | no | no |
 | Regimes | yes | veto only: `recordRegimeBlock` (gate-skips.js:45) writes a `regime_block` row only when the gate blocks; an allowed entry records nothing (tick-permit side refusals are the permit feeder's own records, a separate path) | yes (`checkRegimeGate`; `permittedSides` → tick permits) | yes — veto / side veto | no |
 | Economic calendar | yes | veto only: `checks.news_window` is set at risk.js:2089 only when an event is found, immediately before the veto; an allowed entry records nothing | yes when `newsGate.on` (default off) | yes when on — veto | no |
-| Broker schedule / sessions | yes | yes (`closed_market_skip` log line; routing) | yes (scan set, closed-market routing, exit hours) | yes — routing, scan membership | resting LIMIT placement is a verified order |
+| Broker schedule / sessions | yes | conditional: recorded only when the schedule refuses — unknown hours → the one-shot `recordMarketHoursUnknown` decision row (loop.js:547), closed → the closed-market routing's own resting-order record; an allowed open-market order attaches neither the gate (`resolveEntryMarketGate`, loop.js:543) nor its source to the proposal or `checks_json`, and no `closed_market_skip` writer exists (Codex round 6) | yes (scan set, closed-market routing, exit hours) | yes — routing, scan membership | resting LIMIT placement is a verified order |
 | Tick-activity | yes (`/state/tick-activity`) | no | no | no | no |
 | Premise (per position) | yes (cockpit) | yes (`invalidation_trigger`) | yes (position manager, fast-monitor tick) | yes — FULL_EXIT | yes — the close is a broker order with a receipt |
 
