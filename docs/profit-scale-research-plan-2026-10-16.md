@@ -152,19 +152,32 @@ second factor without the first multiplies losses by the same ratio — which is
 
 ## 6. Sizing (last, and only on proven expectancy)
 
-- **Data**: the R stream of the robust cells (steps 1–4), the account balances, the limits in force (`perTradeRiskPct`,
-  `dailyLossLimit`, `equityStopPct`, `maxNotionalXBalance`).
+- **Data**: the R stream of the robust cells (steps 1–4), the account balances, the limits in force per account —
+  `perTradeRiskPct`, `maxRiskCapPct`, the tiered daily cap (`dailyLossFloorUsd`, `dailyLossTierAtUsd`,
+  `dailyLossTierSmallPct`, `dailyLossTierLargePct`, the flat `dailyLossLimit` it replaces), `equityStopPct`,
+  `maxNotionalXBalance` — read as each account's EFFECTIVE values (`GET /state/config?account=`: global plus the
+  account's overlay), not the code defaults (Codex round 5).
 - **Instrument**: a replay of the same R stream at 0.5 %, 1 %, 2 %, 3 % risk per trade per account: monthly result
   and maximum drawdown in R and IN THE ACCOUNT'S DEPOSIT CURRENCY (SGD on 42993489 and 43097342, USD on the other
-  three; no conversion — none is sourced; Codex round 2), days the daily loss cap would have stopped trading — on the
-  USD accounts only: the cap is defined in USD at runtime (`dailyLossLimit` 300 and `dailyLossFloorUsd` 200 in
-  `risk.js`, native P&L converted through `accountCurrencyConversion`), so an SGD replay cannot count cap days
-  without a sourced historical USD/SGD rate; the statistic is omitted for 42993489 and 43097342 and said so, rather
-  than compared at an unsourced rate (Codex round 4) — the Kelly fraction from the
+  three; no conversion — none is sourced; Codex round 2). **The hard ceiling bounds the scenarios** (Codex round 5):
+  `riskBudgetUsd` clamps every percentage budget at `balance × maxRiskCapPct` (`risk.js:1140`; default 0.015,
+  `risk.js:324`), so 0.5 % and 1 % are reachable through `perTradeRiskPct` alone while 2 % and 3 % are not — those
+  two are replayed twice: clamped at each account's effective ceiling (what the engine would actually size), and as
+  "ceiling raised" scenarios labelled as requiring a separately authorised `maxRiskCapPct` change (a risk-limit
+  change: ask-first, P7, never implied by this study). Days the daily loss cap would have stopped trading — on the
+  USD accounts only: the cap is defined in USD at runtime AND IS TIERED — `pacedDailyCap`
+  (`daily-loss-pacing.js:153`) takes max(`dailyLossFloorUsd` 200, balance × 3 % below `dailyLossTierAtUsd` 10,000 /
+  4 % above), which replaces the flat `dailyLossLimit` 300 while the three tier knobs are set (`risk.js:250–282`: a
+  $46,073 account caps near $1,843, not $300), every value subject to the global and per-account overlays; the replay
+  loads each USD account's effective knobs and applies the runtime calculation (Codex round 5). Native P&L is
+  converted through `accountCurrencyConversion`, so an SGD replay cannot count cap days without a sourced historical
+  USD/SGD rate; the statistic is omitted for 42993489 and 43097342 and said so, rather than compared at an unsourced
+  rate (Codex round 4) — the Kelly fraction from the
   measured win rate and payoff (today f* = 0.48 − 0.52 ÷ (0.66 ÷ 0.72) < 0 — negative: no size is right until the
   expectancy is positive).
 - **Output**: the risk unit per account that keeps the drawdown inside the owner's capital-preservation numbers.
-- **Decision it feeds**: a change to `perTradeRiskPct` — ask-first, the owner's alone (P7).
+- **Decision it feeds**: a change to `perTradeRiskPct`, and separately to `maxRiskCapPct` where a scenario needs the
+  ceiling raised — each ask-first, the owner's alone (P7).
 
 ## 7. Discipline — standing rules, each with its live check
 
