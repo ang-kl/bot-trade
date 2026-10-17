@@ -26,3 +26,15 @@ test('the golden population exercises stops, targets, moved stops, time caps and
   for (const k of ['stop', 'target', 'stop_moved', 'time_cap']) assert.ok(reasons.has(k), k)
   assert.ok(trunc > 0)
 })
+
+// Claude · № 15,375 17-Oct (owner: "Build #84, merge when green"; claude-builder).
+// #84 moved the time cap to its real expiry, so the three cap rules' golden
+// entries were regenerated. Every other rule must stay exactly as it was
+// before #84: this hash is of their pre-#84 entries (main c0c77adc).
+test('#84: every rule without a time cap keeps its pre-#84 golden entry byte-for-byte', async () => {
+  const { createHash } = await import('node:crypto')
+  const keep = Object.keys(GOLDEN.rules).filter(k => !['cap_30m', 'cap_120m', 'tp_1R_cap_30m'].includes(k))
+  assert.equal(keep.length, 7)
+  const h = createHash('sha256').update(JSON.stringify(keep.map(k => [k, GOLDEN.rules[k]]))).digest('hex')
+  assert.equal(h, 'a059dc7ed20503cf73c9ceca0ed5a9a811b62ef17891f966d1b823383f0a365f')
+})

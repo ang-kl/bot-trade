@@ -96,13 +96,16 @@ test('short side is mirrored, not special-cased away', () => {
   assert.equal(replayExit([bar(0, 100, 100.1, 98.3, 98.4)], SHORT, {}).rMultiple, 1.6)
 })
 
-test('THE AUDIT FINDING: a 30-minute cap closes at the bar close, mid-move', () => {
+test('THE AUDIT FINDING: a 30-minute cap closes at the price at its expiry, mid-move', () => {
   // 60% of real postmortems classify time_cap. This is that, replayed.
+  // #84 (Claude · № 15,375 17-Oct): the cap ends at minute 30, the first
+  // bar's close — the price then is 100.2. It used to close one bar late, at
+  // the second bar's close (100.4, +0.4R).
   const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(30, 100.2, 100.6, 100.1, 100.4)]
   const r = replayExit(bars, LONG, { name: 'cap_30m', timeCapMin: 30 })
   assert.equal(r.reason, 'time_cap')
-  assert.equal(r.exitPrice, 100.4)
-  assert.equal(r.rMultiple, 0.4, 'closed at +0.4R against a 1.6R target')
+  assert.equal(r.exitPrice, 100.2)
+  assert.equal(r.rMultiple, 0.2, 'closed at +0.2R against a 1.6R target')
 })
 
 test('the same trade with NO cap reaches the target', () => {
@@ -113,11 +116,13 @@ test('the same trade with NO cap reaches the target', () => {
   assert.equal(r.heldMin, 75)
 })
 
-test('a target reached in the SAME bar the cap expires counts as the target', () => {
-  // Stated as a deliberate convention in the code: the clock is checked last.
+test('a target reached in the bar AFTER the cap expired does not count: the cap closed first (#84)', () => {
+  // Until #84 the clock was checked last against bar OPEN times, so this
+  // target (minute 30 onward) counted although the cap ended at minute 30.
   const bars = [bar(0, 100, 100.2, 99.9, 100.1), bar(30, 100.1, 101.7, 100, 100.2)]
   const r = replayExit(bars, LONG, { name: 'cap_30m', timeCapMin: 30 })
-  assert.equal(r.reason, 'target')
+  assert.equal(r.reason, 'time_cap')
+  assert.equal(r.exitPrice, 100.1)
 })
 
 test('a lower target is reachable inside the same window', () => {
@@ -240,4 +245,58 @@ test('the shipped rule set covers the audit question and names every rule', () =
   assert.ok(names.includes('no_cap'), 'the cap-vs-target question needs both ends')
   assert.ok(names.includes('tp_1R'), 'a target 30 minutes can actually reach')
   assert.equal(new Set(names).size, names.length, 'names must be unique — they key the report')
+})
+
+// ---------------------------------------------------------------------------
+// #84 — the time cap at its real expiry (Claude · № 15,375 17-Oct; owner:
+// "Build #84, merge when green", rule "Exact at boundary, approx inside";
+// Codex round 2 on #1403). Self-derived fixtures: the price at an expiry that
+// falls on a bar boundary is that bar's close (or the next open after a gap);
+// inside a bar it is unknown, so that bar's close stands in unless the bar
+// also touches a level the rule acts on.
+// ---------------------------------------------------------------------------
+
+test('#84: a cap ending exactly at a bar close exits at THAT close, not the next bar\'s open', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(30, 100.3, 100.6, 100.25, 100.4)]
+  const r = replayExit(bars, LONG, { timeCapMin: 30 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.2); assert.equal(r.exitAtMs, t0)
+})
+
+test('#84: a cap ending inside a bar that touches nothing exits at that bar\'s close, flagged', () => {
+  // Hourly bars; the 90-minute cap ends inside the second bar. The third bar
+  // reaches the target — after the cap, so it no longer counts.
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4), bar(120, 100.4, 101.8, 100.3, 101.7)]
+  const r = replayExit(bars, LONG, { timeCapMin: 90 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.4); assert.equal(r.capInsideBar, true)
+  assert.equal(replayExit(bars, LONG, {}).reason, 'target', 'without the cap the target is reached')
+})
+
+test('#84: a cap ending inside a bar that touches the target, the stop or the partial level is ambiguous', () => {
+  const tgt = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 101.7, 100.1, 100.4), bar(120, 100.4, 100.5, 100.3, 100.4)]
+  const r1 = replayExit(tgt, LONG, { timeCapMin: 90 })
+  assert.equal(r1.ok, false); assert.equal(r1.ambiguous, true); assert.match(r1.reason, /stop or the target/)
+  const stp = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 98.9, 100.4), bar(120, 100.4, 100.5, 100.3, 100.4)]
+  assert.equal(replayExit(stp, LONG, { timeCapMin: 90 }).ambiguous, true)
+  const part = [bar(0, 100, 100.2, 99.9, 100.1), bar(60, 100.1, 100.5, 100.05, 100.4), bar(120, 100.4, 100.5, 100.3, 100.4)]
+  const r3 = replayExit(part, LONG, { timeCapMin: 90, partialAtR: 0.3 })
+  assert.equal(r3.ambiguous, true); assert.match(r3.reason, /partial level/)
+  assert.equal(replayExit(part, LONG, { timeCapMin: 90 }).reason, 'time_cap', 'the same bar without a partial rule is a plain cap')
+})
+
+test('#84: a cap that expired inside the skipped entry bar is ambiguous, not scored at a later bar', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4)]
+  const r = replayExit(bars, { ...LONG, openedAtMs: t0 + 10 * MIN }, { timeCapMin: 30 })
+  assert.equal(r.ok, false); assert.equal(r.ambiguous, true); assert.match(r.reason, /entry bar/)
+})
+
+test('#84: a cap that expired in a gap between bars exits at the next bar\'s open', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4), bar(120, 100.4, 100.5, 100.3, 100.45), bar(360, 100.6, 100.9, 100.5, 100.8)]
+  const r = replayExit(bars, LONG, { timeCapMin: 200 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.6); assert.equal(r.exitAtMs, t0 + 360 * MIN)
+})
+
+test('#84: the short side mirrors the boundary exit', () => {
+  const bars = [bar(0, 100, 100.1, 99.7, 99.8), bar(30, 99.8, 99.9, 99.5, 99.6)]
+  const r = replayExit(bars, SHORT, { timeCapMin: 30 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 99.8); assert.equal(r.rMultiple, 0.2)
 })
