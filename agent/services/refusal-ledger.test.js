@@ -281,3 +281,44 @@ test('R1: refusalCostReport splits known-unit rows from legacy rows, and the ref
   assert.match(g.note, /1 scored refusal\(s\) in the gate's stop unit/)
   assert.match(g.note, /1 older row\(s\) in an unknown stop unit left out/)
 })
+
+// Claude · № 15,375 17-Oct (owner: "Build #84, merge when green"; claude-builder).
+// #84 through the real scorer: a horizon ending mid-bar used to read
+// `truncated` (the cap only fired on a bar OPENING after it, which the window
+// never holds). Now the bar holding the expiry decides: no level touched →
+// time_cap at its close; a level touched → ambiguous. Self-derived bars.
+test('#84: a refusal whose horizon ends inside a bar scores time_cap, or ambiguous when that bar touches a level', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + 30 * 60_000 // a refusal mid-hour: the 48 h horizon ends mid-bar
+  refuse(db, { symbol: 'EURUSD', at })
+  refuse(db, { symbol: 'GBPUSD', entry: 1.3, sl: 1.295, tp: 1.31, at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const H = 3600_000
+  const flat = (base, lastHigh, lastClose) => Array.from({ length: 48 }, (_, k) => {
+    const t = T0 + (k + 1) * H
+    return k === 47 ? bar(t, base, lastHigh, base - 0.001, lastClose) : bar(t, base, base + 0.001, base - 0.001, base)
+  })
+  const fetchBars = async (symbol) => symbol === 'EURUSD' ? flat(1.1, 1.103, 1.102) : flat(1.3, 1.311, 1.305)
+  await scoreRefusedOpportunities(db, fetchBars, { nowMs: T0 + 3 * 86_400_000, maxPerCycle: 10 })
+  const by = Object.fromEntries(db.prepare('SELECT * FROM refusal_scores').all().map(x => [x.symbol, x]))
+  assert.equal(by.EURUSD.outcome, 'time_cap', 'RED before: truncated')
+  assert.equal(by.EURUSD.r_reached, 0.4)
+  assert.equal(by.EURUSD.exit_at, iso(at + 48 * H), 'stamped at the horizon\'s expiry (Codex round 1 on #1404)')
+  assert.equal(by.GBPUSD.outcome, 'ambiguous', 'the last bar reaches the target 1.31 and holds the expiry')
+})
+
+// Codex round 2 on #1404: the scorer passes its timeframe as the bar size. A
+// window of two bars a gap apart proves no bar size by itself; with the 1h
+// timeframe the horizon's expiry falls in the gap and closes at the next open.
+test('#84: the scorer passes its timeframe — a horizon ending in a gap closes at the next bar\'s open', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + 30 * 60_000
+  refuse(db, { symbol: 'EURUSD', at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const H = 3600_000
+  const fetchBars = async () => [bar(T0 + 47 * H, 1.1, 1.101, 1.099, 1.1), bar(T0 + 50 * H, 1.102, 1.103, 1.1015, 1.1025)]
+  await scoreRefusedOpportunities(db, fetchBars, { nowMs: T0 + 3 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED without the timeframe: two bars a gap apart read ambiguous')
+  assert.equal(row.r_reached, 0.4, 'priced at the 50h open, 1.102')
+})

@@ -131,7 +131,9 @@ test('THE AUDIT QUESTION, end to end: the 30-minute cap versus letting it run', 
 
   const cap = r.rules.find(x => x.rule === 'cap_30m')
   assert.equal(cap.usable, 35)
-  assert.equal(cap.expectancyR, 0.4, 'the clock banks +0.4R against a 1.6R target')
+  // #84 (Claude · № 15,375 17-Oct): the cap ends at the first bar's close
+  // (100.2), no longer at the next bar's close (100.4, the old +0.4R).
+  assert.equal(cap.expectancyR, 0.2, 'the clock banks +0.2R against a 1.6R target')
   assert.deepEqual(cap.byReason, { time_cap: 35 })
 
   const uncapped = r.rules.find(x => x.rule === 'no_cap')

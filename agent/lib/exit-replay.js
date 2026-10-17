@@ -176,6 +176,17 @@ export function replayExit(bars, trade, rule = {}) {
 
   const capMs = rule.timeCapMin != null ? rule.timeCapMin * 60_000 : null
   const startMs = openedAtMs ?? num(toBarTuple(bars[0])[T])
+  // Claude · № 15,375 17-Oct (owner: "Build #84, merge when green", rule
+  // "Exact at boundary, approx inside"; Codex round 2 on #1403; claude-builder).
+  // THE CAP AT ITS REAL EXPIRY. It was checked against bar OPEN times and
+  // closed at that bar's close, so a cap ending mid-bar exited one to two
+  // bars late and a stop or target touched after the expiry still counted.
+  // Now: a cap ending at a bar boundary exits at the price at that instant
+  // (the bar's close, or the next bar's open after a gap); a cap ending inside
+  // a bar exits at that bar's close (at most one bar late) unless the bar also
+  // reaches the stop, the target or the partial level, where which came first
+  // is not recorded — ambiguous, counted and never scored.
+  const expiry = capMs != null && startMs != null ? startMs + capMs : null
 
   // R at a price, signed by direction.
   const rAt = (price) => (long ? price - entry : entry - price) / risk
@@ -196,6 +207,11 @@ export function replayExit(bars, trade, rule = {}) {
   const chand = rule.chandelier && num(rule.chandelier.mult) > 0 && num(rule.chandelier.period) > 0 ? { mult: num(rule.chandelier.mult), period: Math.round(num(rule.chandelier.period)) } : null
   const meanPeriod = rule.exitAtMean && num(rule.exitAtMean.period) > 0 ? Math.round(num(rule.exitAtMean.period)) : null
   const tuples = bars.map(toBarTuple) // V3 L2b W13: {t,o,h,l,c} objects read as tuples
+  // Codex round 2 on #1404: the bar size comes from the caller (the timeframe
+  // the bars were fetched at). Inferred only from a spacing seen at least
+  // twice — a lone interval may be a gap, and a gap is not a bar.
+  const tf = expiry != null ? (num(trade?.barMs) > 0 ? num(trade.barMs) : regularIntervalMs(tuples)) : null
+  let prevEnd = null // the end of the previous bar this replay read
   let partial = null // { r, fraction, atMs } once banked
   let peakPrice = null
   // A banked partial blends into the final R; `done` reads it.
@@ -210,8 +226,30 @@ export function replayExit(bars, trade, rule = {}) {
     const b = tuples[i]
     const t = num(b[T]), hi = num(b[H]), lo = num(b[L]), close = num(b[C])
     // Bars before entry are context in the stored window, not part of the trade.
-    if (startMs != null && t != null && t < startMs) continue
+    // The one holding a mid-bar fill still bounds where a cap expired: its end
+    // tells an expiry inside it from one in a gap after it (Codex round 3 on #1404).
+    if (startMs != null && t != null && t < startMs) {
+      if (tf != null && startMs < t + tf) prevEnd = t + tf
+      continue
+    }
     used++
+
+    // The cap expired at or before this bar opened: at its open exactly, or
+    // in a gap after the previous bar closed — the first price after it is
+    // this open. Before any bar was read, it expired inside the entry bar the
+    // replay skips, at a price no bar here shows.
+    if (expiry != null && t != null && t >= expiry) {
+      const open = num(b[O])
+      if (open != null && (t === expiry || (prevEnd != null && prevEnd <= expiry))) return finish(open, t, 'time_cap', used)
+      return {
+        ok: false, ambiguous: true, barsUsed: used,
+        reason: tf == null
+          ? 'the bar size is unknown (no caller timeframe, no repeated spacing), so where the time cap expired cannot be placed'
+          : 'the time cap expired inside the entry bar, which the replay does not read — the exit price is unknown',
+      }
+    }
+    const capInside = expiry != null && tf != null && t != null && t < expiry && expiry < t + tf
+    if (tf != null && t != null) prevEnd = t + tf
 
     const hitStop = long ? lo <= stop : hi >= stop
     const hitTp = tpFromRule != null && (long ? hi >= tpFromRule : lo <= tpFromRule)
@@ -221,6 +259,17 @@ export function replayExit(bars, trade, rule = {}) {
       return {
         ok: false, ambiguous: true, barsUsed: used,
         reason: 'one bar touched both the stop and the target — intrabar order is not recorded, so the outcome is unknowable',
+      }
+    }
+    // Codex round 1 on #1404: a bar that OPENS through the stop or the target
+    // reached it before the expiry inside it — that is order, not ambiguity.
+    const openB = num(b[O])
+    const openThroughStop = hitStop && openB != null && (long ? openB <= stop : openB >= stop)
+    const openThroughTp = hitTp && openB != null && (long ? openB >= tpFromRule : openB <= tpFromRule)
+    if (capInside && (hitStop || hitTp) && !openThroughStop && !openThroughTp) {
+      return {
+        ok: false, ambiguous: true, barsUsed: used,
+        reason: 'the time cap expires inside a bar that also reaches the stop or the target — which came first is not recorded',
       }
     }
     if (hitStop) return finish(stop, t, stop === sl0 ? 'stop' : 'stop_moved', used)
@@ -233,12 +282,24 @@ export function replayExit(bars, trade, rule = {}) {
     const barPeakPrice = long ? hi : lo
     if (peakPrice == null || (long ? barPeakPrice > peakPrice : barPeakPrice < peakPrice)) peakPrice = barPeakPrice
 
+    const partialLevel = partialAtR != null ? (long ? entry + partialAtR * risk : entry - partialAtR * risk) : null
+    const openThroughPartial = partialLevel != null && openB != null && (long ? openB >= partialLevel : openB <= partialLevel)
+    if (capInside && partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR && !openThroughPartial) {
+      return {
+        ok: false, ambiguous: true, barsUsed: used,
+        reason: 'the time cap expires inside a bar that also reaches the partial level — which came first is not recorded',
+      }
+    }
     // A partial banked at its level, from THIS bar's close on (the level was
     // touched inside the bar; the stop was not, or we would have returned).
     if (partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR) {
       partial = { r: partialAtR, fraction: partialFraction, atMs: t }
       if (partialFraction >= 1) return finish(long ? entry + partialAtR * risk : entry - partialAtR * risk, t, 'partial_full', used)
     }
+    // The cap ends inside this bar and nothing it acts on was touched after
+    // the open: closed at market at the expiry, priced at this bar's close
+    // (at most one bar late). Stamped at the expiry (Codex round 1 on #1404).
+    if (capInside) return { ...finish(close, expiry, 'time_cap', used), capInsideBar: true }
     // The exit at the mean: this bar's close crossed the SMA in the trade's favour.
     if (meanPeriod != null) {
       const sma = smaAt(tuples, i, meanPeriod)
@@ -264,12 +325,9 @@ export function replayExit(bars, trade, rule = {}) {
       }
     }
 
-    // The clock, checked LAST: a bar that reached the target counts as a target
-    // hit even if the cap also expires inside it. The cap closes at market, and
-    // the market it closes at is this bar's close.
-    if (capMs != null && startMs != null && t != null && t - startMs >= capMs) {
-      return finish(close, t, 'time_cap', used)
-    }
+    // The cap ends exactly as this bar closes: everything in the bar came
+    // before it, and the price at the expiry is this close.
+    if (expiry != null && tf != null && t != null && expiry === t + tf) return finish(close, expiry, 'time_cap', used)
   }
 
   return {
@@ -400,6 +458,21 @@ export function normaliseBars(bars) {
 // ---------------------------------------------------------------------------
 
 /** The bar interval of a stored window: the median positive spacing, or null. */
+/**
+ * The bar size a window proves: the smallest positive spacing that occurs at
+ * least twice, else null. A spacing seen once may be a gap (a weekend, a
+ * missing bar), which is not a bar size (Codex round 2 on #1404).
+ */
+function regularIntervalMs(tuples) {
+  const counts = new Map()
+  for (let i = 1; i < tuples.length; i++) {
+    const a = num(tuples[i - 1]?.[T]), b = num(tuples[i]?.[T])
+    if (a != null && b != null && b > a) counts.set(b - a, (counts.get(b - a) || 0) + 1)
+  }
+  const seen = [...counts].filter(([, n]) => n >= 2).map(([d]) => d)
+  return seen.length ? Math.min(...seen) : null
+}
+
 export function barIntervalMs(bars) {
   const ts = normaliseBars(bars).map(b => num(b?.[T])).filter(t => t != null)
   const d = []
