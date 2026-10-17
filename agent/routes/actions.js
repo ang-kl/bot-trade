@@ -5645,8 +5645,8 @@ export default function actionsRouter(db, deps = {}) {
         Promise.all([
           import('../services/account-registry.js'),
           import('../services/account-capabilities.js'),
-          import('../services/declared-strategy-policy.js'),
-        ]).then(([{ upsertAccount }, { enabledForMode, modeForPushedEntry }, { applyDeclaredStrategyPolicy }]) => {
+          import('../services/account-enable-hook.js'),
+        ]).then(([{ upsertAccount }, { enabledForMode, modeForPushedEntry }, { runAccountEnableHook }]) => {
           let enabledAny = false
           try {
             for (const a of accounts) {
@@ -5699,7 +5699,7 @@ export default function actionsRouter(db, deps = {}) {
           // Claude · № 15,286 17-Oct (audit finding A): a pushed list that leaves
           // an account enabled applies the declared strategy policy now
           // (seed-once, so accounts already seeded are untouched).
-          if (enabledAny) applyDeclaredStrategyPolicy(db, { reason: 'account list pushed' })
+          if (enabledAny) runAccountEnableHook(db, 'account list pushed')
         }).catch(() => {})
 
         // Stale-position sweep, multi-account aware: rows belonging to ANY

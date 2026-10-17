@@ -17,12 +17,16 @@ import { setAccountEnabled, syncSelectedAccount } from './account-registry.js'
 import { unarchiveAccount } from './account-capabilities.js'
 import { applyDeclaredStrategyPolicy } from './declared-strategy-policy.js'
 import { setAccountArmed } from './account-arming.js'
+import { setAccountEnableHook } from './account-enable-hook.js'
+import { readFileSync } from 'node:fs'
 
 const ARCHIVED = '43002148'
 const RUNNING = '46130058'
 let db
 
 beforeEach(() => {
+  // What index.js registers at boot (pinned below).
+  setAccountEnableHook((d, { reason }) => applyDeclaredStrategyPolicy(d, { reason, log: () => {} }))
   db = initDB(':memory:')
   db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,1,0,'archived')").run(ARCHIVED)
   db.prepare("INSERT INTO accounts (account_id,is_live,enabled,mode) VALUES (?,0,1,'active')").run(RUNNING)
@@ -68,4 +72,14 @@ test('a later owner decision on an already-seeded account is not undone by anoth
   setStage(db, { kind: 'strategy', key: 'ema_pullback', stage: 'trade', on: true, accountId: RUNNING, actor: 'owner_route' }, { getState, setState })
   setAccountEnabled(db, ARCHIVED, true, 'active') // some other account enabled: the seed runs again
   assert.equal(armedTradeKeys(db, getState, RUNNING).has('ema_pullback'), true, 'seed-once: the owner cell stands')
+})
+
+test('boot registers the declared policy as the account enable hook (wiring pin)', () => {
+  const src = readFileSync(new URL('../index.js', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+  assert.match(src, /setAccountEnableHook\(\(d, \{ reason \}\) => applyDeclaredStrategyPolicy\(d, \{ reason \}\)\)/)
+})
+
+test('with no hook registered an enable still succeeds (the policy write never blocks the enable)', () => {
+  setAccountEnableHook(null)
+  assert.equal(setAccountEnabled(db, ARCHIVED, true, 'active').ok, true)
 })
