@@ -296,3 +296,18 @@ test('time cap on, two naked, one protected at the fresh read: only the still-na
   assert.equal(out.naked, 2)
   assert.deepEqual(closes, ['628184260'], 'RED before: the position found protected at the fresh read was closed for age')
 })
+
+// Codex P1 on #1402 (owner: "One read, 3 s cap"): the recheck is ONE account
+// read for every naked finding, capped inside the 4 s account budget.
+test('three naked on one account: one fresh account read, capped at 3 s, serves all three', async () => {
+  seed(OTHER, '628184260'); seed(OTHER, '777'); seed(OTHER, '888')
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }, { positionId: '777' }, { positionId: '888' }] })
+  b.fresh.override = () => [freshPos('628184260', null), freshPos('777', 0.2262), freshPos('888', null)]
+  const reads = []
+  const wsReconcile = (...a) => { reads.push(a[5]); return b.wsReconcile(...a) }
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile })
+  assert.equal(out.naked, 3)
+  assert.deepEqual(reads, [3_000], 'RED before: one 5 s read per naked finding')
+  assert.deepEqual(b.amends.map(a => a.positionId).sort(), [628184260, 888])
+  assert.equal(out.stopsAdopted, 1)
+})
