@@ -152,3 +152,25 @@ test('a stale stop on our record with a broker-naked position: the book is corre
   assert.equal(b.amends.length, 1)
   assert.equal(b.amends[0].account, OTHER)
 })
+
+// Codex P1 (round 3) on #1398: a run the audit triggers is scoped to the naked
+// positions it found — a protected position past the account's hard time cap
+// on the same account is not touched by it.
+test('the audit-triggered guardian run touches only the naked positions it found', async () => {
+  const { setState } = await import('../db.js')
+  setState(db, 'loss_guardian_json', JSON.stringify({ maxHoldHours: 1 }))
+  seed(OTHER, '628184260')            // naked
+  seed(OTHER, '999', { sl: 0.23 })    // protected, and (below) open 10 h — past the 1 h cap
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }, { positionId: '999', stopLoss: 0.23 }] })
+  const closes = []
+  b.lossGuardianDeps.exec.closePosition = async (_c, args) => { closes.push(args.positionId); return { ok: true } }
+  const reconcile = b.lossGuardianDeps.exec.reconcile
+  b.lossGuardianDeps.exec.reconcile = async (c) => {
+    const r = await reconcile(c)
+    for (const p of r.position) p.tradeData.openTimestamp = Date.now() - 10 * 3_600_000
+    return r
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  assert.equal(out.naked, 1)
+  assert.deepEqual(closes.filter(id => String(id) === '999'), [], 'RED before: the protected position was closed by the time cap')
+})

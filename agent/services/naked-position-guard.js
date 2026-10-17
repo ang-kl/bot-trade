@@ -1454,6 +1454,9 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
             if (layers().includes('loss_guardian')) return null
             return runLossGuardian(db, creds, {
               notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
+              // Codex P1 (round 3) on #1398: only the positions this audit
+              // found naked; nothing else on the account is evaluated.
+              onlyPositionIds: prot.naked.map(f => String(f.positionId)),
               ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
             })
           })

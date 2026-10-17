@@ -171,7 +171,15 @@ async function lossGuardianPass(db, creds, deps = {}) {
     // only exit authority on those rows; skipped here by the same predicate
     // the weekend bank uses, and counted.
     const bookHolds = makeBookHeldCheck(db, null)
+    // Claude · № 15,290 17-Oct (owner authorised this file for this one change,
+    // Codex P1 round 3 on #1398; claude-builder). `onlyPositionIds` scopes a
+    // run to the positions its caller names: the protection audit runs the
+    // guardian for the positions it found naked, and a run it triggers must
+    // not reach any other position on the account (the hard time cap would
+    // otherwise close an unrelated, protected one). Absent = every row, as before.
+    const only = deps.onlyPositionIds == null ? null : new Set([...deps.onlyPositionIds].map(String))
     const rows = allRows.filter(r => {
+      if (only && !only.has(String(r.position_id))) return false
       if (bookHolds(r.position_id, r.trade_id)) { summary.bookSkipped += 1; return false }
       const c = cfgFor(r.account_id)
       if (!c.on) return false
