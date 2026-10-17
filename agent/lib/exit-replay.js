@@ -226,7 +226,12 @@ export function replayExit(bars, trade, rule = {}) {
     const b = tuples[i]
     const t = num(b[T]), hi = num(b[H]), lo = num(b[L]), close = num(b[C])
     // Bars before entry are context in the stored window, not part of the trade.
-    if (startMs != null && t != null && t < startMs) continue
+    // The one holding a mid-bar fill still bounds where a cap expired: its end
+    // tells an expiry inside it from one in a gap after it (Codex round 3 on #1404).
+    if (startMs != null && t != null && t < startMs) {
+      if (tf != null && startMs < t + tf) prevEnd = t + tf
+      continue
+    }
     used++
 
     // The cap expired at or before this bar opened: at its open exactly, or

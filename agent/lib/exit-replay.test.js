@@ -339,3 +339,13 @@ test('#84: without a caller timeframe the bar size is the smallest spacing seen 
   const r = replayExit(bars, LONG, { timeCapMin: 200 })
   assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.6, 'hourly from the repeated spacing; the expiry fell in the gap')
 })
+
+// Codex round 3 on #1404: the skipped entry bar still bounds where the cap expired.
+test('#84: a cap expiring in a gap after the entry bar closes exits at the next open; inside the entry bar it stays ambiguous', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(360, 100.5, 100.6, 100.4, 100.5)]
+  const trade = { ...LONG, openedAtMs: t0 + 30 * MIN, barMs: 60 * MIN }
+  const gap = replayExit(bars, trade, { timeCapMin: 90 })
+  assert.equal(gap.reason, 'time_cap'); assert.equal(gap.exitPrice, 100.5, 'expiry 02:00 is after the 00:00 bar closed → the 06:00 open')
+  const inside = replayExit(bars, trade, { timeCapMin: 20 })
+  assert.equal(inside.ambiguous, true); assert.match(inside.reason, /entry bar/)
+})
