@@ -141,13 +141,15 @@ test('entry bar (Codex round 3 P2): a mid-bar fill whose bar reaches the break-e
 // round 4 P2s on #1394; claude-builder). Self-derived fixtures: the replay skips
 // the entry bar, so an exit that rule would take inside it is unknown.
 const HOUR = 3_600_000
-test('entry bar (Codex round 4 P2): a time cap expiring before the entry bar closes is entry_bar_unresolved; one expiring after it is replayed', () => {
+test('entry bar (Codex round 4 P2; round 1 on #1403): a time cap expiring before the containing bar closes is entry_bar_unresolved, mid-bar or at the open; one expiring after it is replayed', () => {
   const b = [[0, 100, 100.4, 99.8, 100.2], [HOUR, 100.2, 100.6, 100.0, 100.5], [2 * HOUR, 100.5, 100.9, 100.3, 100.8]]
   const long = { side: 'long', entry: 100, sl: 99, tp: 103 }
   assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, { timeCapMin: 30 }).status, 'entry_bar_unresolved', 'expires at 40 min, the bar closes at 60')
   assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 40 * MIN }, { timeCapMin: 30 }).status, 'ok', 'expires at 70 min, after the bar closes')
   assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, { timeCapMin: 120 }).status, 'ok')
-  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 0 }, { timeCapMin: 30 }).status, 'ok', 'a fill at the bar open is replayed from that bar')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 0 }, { timeCapMin: 30 }).status, 'entry_bar_unresolved', 'a fill at the bar open: the 30 min cap still expires inside the hourly bar (Codex round 1 on #1403)')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 0 }, { timeCapMin: 60 }).status, 'ok', 'a cap ending exactly at the bar close is a bar boundary')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 0 }, { timeCapMin: 120 }).status, 'ok')
   assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, {}).status, 'ok', 'as traded: no cap, no level inside the bar')
 })
 

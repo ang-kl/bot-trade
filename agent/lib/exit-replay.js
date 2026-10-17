@@ -428,6 +428,17 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   })
   if (k < 0) return { status: 'clipped' }
   const bar = tuples[k]
+  // Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after № 15,306;
+  // Codex round 4 P2s on #1394, and round 1 on #1403; claude-builder).
+  // A time cap that expires before the containing bar closes exits at a price
+  // inside that bar, which no OHLC bar shows: replayExit skips a mid-bar
+  // entry's bar and, for a fill at the open, closes at a later bar's close.
+  // Unknown either way, so the row is counted — checked before the bar-open
+  // return so a fill at the open with a cap shorter than the bar is caught.
+  const capMin = num(rule.timeCapMin)
+  if (capMin != null && capMin > 0 && tf != null && openedAtMs + capMin * 60_000 < num(bar[T]) + tf) {
+    return { status: 'entry_bar_unresolved' }
+  }
   if (num(bar[T]) === openedAtMs) return { status: 'ok' }
   const side = String(trade?.side || '').toLowerCase()
   const long = side === 'long' || side === 'buy'
@@ -448,15 +459,6 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   const lo = num(bar[L]), hi = num(bar[H])
   if (lo == null || hi == null) return { status: 'ok' }
   if (levels.some(p => p >= lo && p <= hi)) return { status: 'entry_bar_unresolved' }
-  // Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after № 15,306;
-  // Codex round 4 P2s on #1394; claude-builder).
-  // A time cap that expires before the entry bar closes exits at a price
-  // inside that bar, which replayExit never reads (it skips the bar and takes
-  // a later bar's close) — the exit is unknown, so the row is counted.
-  const capMin = num(rule.timeCapMin)
-  if (capMin != null && capMin > 0 && tf != null && openedAtMs + capMin * 60_000 < num(bar[T]) + tf) {
-    return { status: 'entry_bar_unresolved' }
-  }
   // The since-entry Chandelier tightens from the peak. A favourable extreme
   // beyond the fill inside the entry bar may have come after the fill (a
   // tighter stop from the next bar on) or before it (none): replayExit seeds
