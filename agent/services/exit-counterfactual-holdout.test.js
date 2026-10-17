@@ -136,3 +136,41 @@ test('entry bar (Codex round 3 P2): a mid-bar fill whose bar reaches the break-e
   assert.equal(entryBarCoverage(window, tr, { name: 'trail_1R', trailR: 1 }).status, 'entry_bar_unresolved')
   assert.equal(entryBarCoverage(window, tr, { name: 'be_at_2R', breakevenAtR: 1.5 }).status, 'ok', 'a level the bar does not reach stays resolved')
 })
+
+// Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after № 15,306; Codex
+// round 4 P2s on #1394; claude-builder). Self-derived fixtures: the replay skips
+// the entry bar, so an exit that rule would take inside it is unknown.
+const HOUR = 3_600_000
+test('entry bar (Codex round 4 P2): a time cap expiring before the entry bar closes is entry_bar_unresolved; one expiring after it is replayed', () => {
+  const b = [[0, 100, 100.4, 99.8, 100.2], [HOUR, 100.2, 100.6, 100.0, 100.5], [2 * HOUR, 100.5, 100.9, 100.3, 100.8]]
+  const long = { side: 'long', entry: 100, sl: 99, tp: 103 }
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, { timeCapMin: 30 }).status, 'entry_bar_unresolved', 'expires at 40 min, the bar closes at 60')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 40 * MIN }, { timeCapMin: 30 }).status, 'ok', 'expires at 70 min, after the bar closes')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, { timeCapMin: 120 }).status, 'ok')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 0 }, { timeCapMin: 30 }).status, 'ok', 'a fill at the bar open is replayed from that bar')
+  assert.equal(entryBarCoverage(b, { ...long, openedAtMs: 10 * MIN }, {}).status, 'ok', 'as traded: no cap, no level inside the bar')
+})
+
+test('entry bar (Codex round 4 P2): a Chandelier rule whose entry bar holds a favourable extreme beyond the fill is entry_bar_unresolved', () => {
+  const b = [[0, 100, 100.4, 99.8, 100.2], [HOUR, 100.2, 100.6, 100.0, 100.5]]
+  const ch = { chandelier: { mult: 3, period: 22 } }
+  assert.equal(entryBarCoverage(b, { side: 'long', entry: 100, sl: 99, tp: 103, openedAtMs: 10 * MIN }, ch).status, 'entry_bar_unresolved', 'long: high 100.4 above the fill 100')
+  assert.equal(entryBarCoverage(b, { side: 'long', entry: 100.4, sl: 99, tp: 103, openedAtMs: 10 * MIN }, ch).status, 'ok', 'long filled at the bar high: no extreme beyond it')
+  assert.equal(entryBarCoverage(b, { side: 'short', entry: 100, sl: 101, tp: 97, openedAtMs: 10 * MIN }, ch).status, 'entry_bar_unresolved', 'short: low 99.8 below the fill 100')
+  assert.equal(entryBarCoverage(b, { side: 'short', entry: 99.8, sl: 101, tp: 97, openedAtMs: 10 * MIN }, ch).status, 'ok', 'short filled at the bar low')
+  assert.equal(entryBarCoverage(b, { side: 'long', entry: 100, sl: 99, tp: 103, openedAtMs: 0 }, ch).status, 'ok', 'a fill at the bar open is replayed from that bar')
+})
+
+test('entry bar (Codex round 4 P2), through the service: cap_30m and the Chandelier rule count the mid-bar fill as unresolved; as_traded and cap_120m replay it', () => {
+  const db = fresh()
+  const hourly = t => [[t, 100, 100.4, 99.8, 100.2, 0], [t + HOUR, 100.2, 100.6, 100.0, 100.5, 0], [t + 2 * HOUR, 100.5, 102.3, 100.4, 102.1, 0], [t + 3 * HOUR, 102.1, 102.3, 101.9, 102.0, 0]]
+  trade(db, { at: T0, openOffsetMs: 10 * MIN, window: hourly(T0) })
+  const r = exitCounterfactualExtended(db, { minSample: 1, preset: 'breakout' })
+  const by = Object.fromEntries(r.rules.map(x => [x.rule, x]))
+  assert.equal(by.cap_30m.entryBarUnresolved, 1)
+  assert.equal(by.chandelier_3x22.entryBarUnresolved, 1)
+  assert.equal(by.as_traded.entryBarUnresolved, 0)
+  assert.equal(by.cap_120m.entryBarUnresolved, 0)
+  assert.match(r.coverage.rule, /time cap that expires before that bar closes/)
+  assert.match(r.coverage.rule, /Chandelier rules\) a favourable extreme beyond the fill/)
+})
