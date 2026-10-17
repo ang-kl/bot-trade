@@ -1114,11 +1114,11 @@ export async function runProtectionAuditBothSides(db, baseCreds, deps = {}) {
     return run(db, c, deps)
   }))
   const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0,
-    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
+    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
   for (const result of results) {
     if (result.status === 'rejected') { out.errors.push(result.reason?.message || String(result.reason)); continue }
     const r = result.value
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred', 'staleStopsCleared']) out[key] += r[key] || 0
     out.errors.push(...(r.errors || []))
     out.unauditable.push(...(r.unauditable || []))
     out.blind ||= !!r.blind
@@ -1140,6 +1140,18 @@ function auditSingleFlight(db, key, work) {
   })
   flights.set(key, pass)
   return pass
+}
+
+// Claude · № 15,286 17-Oct (Codex P1 on #1398; claude-builder). One queue per
+// database for the audit's own Loss Guardian runs: accounts are audited
+// concurrently, and the guardian's single lock would otherwise hand a second
+// account the first account's pass. A failed run does not block the next.
+const nakedGuardQueues = new WeakMap()
+function queueNakedGuard(db, work) {
+  const prev = nakedGuardQueues.get(db) || Promise.resolve()
+  const run = prev.catch(() => {}).then(work)
+  nakedGuardQueues.set(db, run.catch(() => {}))
+  return run
 }
 
 async function waitForAccount(work, budgetMs) {
@@ -1165,7 +1177,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
 }
 
 async function protectionAuditPass(db, baseCreds, deps, side) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -1213,7 +1225,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   )
 
   const auditOne = async (id) => {
-    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [] }
+    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [] }
     try {
       const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
       if (!creds?.ready) return out
@@ -1387,6 +1399,102 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
         // A failed repair must never take down the audit that found the fault.
         out.errors.push(`${id}: target restore failed — ${err?.message || err}`)
       }
+
+      // Claude · № 15,282 17-Oct (owner: "F-NEW-2 naked stop, all accounts";
+      // claude-builder). A NAKED FINDING GETS A HAND ON EVERY ACCOUNT.
+      //
+      // The Loss Guardian is what puts a stop on a position that has none, and
+      // the band runs it with the SELECTED account's credentials only, so its
+      // own SQL scopes it to that account. Live 42993489 ADAUSD #1944 sat
+      // with no broker stop from 16-10 21:19:50Z to 17-10 04:15Z while this
+      // audit printed "1 naked" every minute: the fact here, the hand there,
+      // and the two never met on a non-selected account.
+      //
+      // So the audit, which already holds THIS account's scoped credentials,
+      // runs the same guardian for this account when it finds a naked
+      // position: the same decision (stop maxAtrMult×ATR from entry, or close
+      // when price is already past it), the same per-account config, the same
+      // ratchet-only amend. loss-guardian.js is unchanged.
+      //
+      // The guardian's lock is one key for every account. If a pass is
+      // already in flight (the band's own, for the selected account) calling
+      // it would return THAT pass and guard nothing here, so the attempt is
+      // said and left to the next sweep rather than reported as done.
+      //
+      // Codex P1 on #1398: accounts are audited CONCURRENTLY, so the check and
+      // the call must be one step and this module's own guardian runs must
+      // queue. Both modules are loaded first; the check and the call then run
+      // with no await between them (one synchronous turn: runLossGuardian
+      // takes its lock before it first awaits). Through the queue, two naked
+      // accounts in one sweep are guarded one after the other, each by its
+      // own pass; only the band's own pass can still be in flight, and that
+      // case defers.
+      if (prot.naked.length) {
+        try {
+          // Codex P1 (round 2) on #1398: the guardian judges nakedness from
+          // `bp.stopLoss ?? current_sl`, so a stop left on our record while the
+          // broker holds NONE hides the position from it and it holds forever.
+          // The book is corrected to broker truth first — a local write, no
+          // broker call, guarded on the value this audit read so a concurrent
+          // writer is never overwritten — the same direction as adoptBrokerStops.
+          const clearStale = db.prepare(
+            `UPDATE monitored_positions SET current_sl = NULL
+              WHERE id = ? AND status = 'active' AND current_sl = ?`
+          )
+          // Codex P2 (round 4) on #1398: the snapshot this audit read can be
+          // older than a stop another controller has since installed, so the
+          // clear waits for a FRESH broker read of the position: still no stop
+          // → clear; a stop now → the book takes the broker's stop instead.
+          const adoptFresh = db.prepare(
+            `UPDATE monitored_positions SET current_sl = ?
+              WHERE id = ? AND status = 'active' AND current_sl = ?`
+          )
+          for (const f of prot.naked) {
+            if (f.ourSl == null || f.monitoredId == null) continue
+            let fresh
+            try { fresh = await readPosition(f) } catch (e) {
+              out.errors.push(`${id}: ${f.symbol} position ${f.positionId} — fresh read before the book clear failed (${e?.message || e}); book left as is`)
+              continue
+            }
+            if (!fresh) continue // gone at the broker: the reconciler's to settle
+            const freshSl = Number(fresh.stopLoss)
+            if (fresh.stopLoss != null && Number.isFinite(freshSl) && freshSl > 0) {
+              if (adoptFresh.run(freshSl, f.monitoredId, f.ourSl).changes) {
+                out.stopsAdopted++
+                console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — broker now holds ${freshSl}; book takes it`)
+              }
+              continue
+            }
+            if (clearStale.run(f.monitoredId, f.ourSl).changes) {
+              out.staleStopsCleared++
+              console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — book stop ${f.ourSl} cleared, the broker holds none (fresh read)`)
+            }
+          }
+          const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
+          const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
+          const g = await queueNakedGuard(db, () => {
+            if (layers().includes('loss_guardian')) return null
+            return runLossGuardian(db, creds, {
+              notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
+              // Codex P1 (round 3) on #1398: only the positions this audit
+              // found naked; nothing else on the account is evaluated.
+              onlyPositionIds: prot.naked.map(f => String(f.positionId)),
+              ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
+            })
+          })
+          if (g == null) {
+            out.nakedDeferred += prot.naked.length
+            printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${prot.naked.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
+          } else {
+            out.nakedStops += g?.stops || 0
+            out.nakedCloses += g?.closes || 0
+            for (const e of (g?.errors || [])) out.errors.push(`${id}: naked guard — ${e}`)
+            console.log(`[protection] ${id}: ${prot.naked.length} naked — Loss Guardian ran for this account: ${g?.stops || 0} stop(s), ${g?.closes || 0} close(s), ${(g?.deferred || []).length} deferred`)
+          }
+        } catch (err) {
+          out.errors.push(`${id}: naked guard failed — ${err?.message || err}`)
+        }
+      }
     } catch (err) {
       const msg = String(err?.message || err)
       // UNAUDITABLE IS NOT UNPROTECTED, and the difference decides whether
@@ -1461,7 +1569,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   }))
   for (let i = 0; i < results.length; i++) {
     const r = results[i]
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred', 'staleStopsCleared']) out[key] += r[key] || 0
     out.errors.push(...r.errors)
     out.unauditable.push(...r.unauditable)
     if (r.accounts && obliged.has(ids[i])) reachedObliged++
