@@ -19,7 +19,6 @@
       --accent-amber: #fbbf24;
       --accent-coral: #f87171;
       --accent-purple: #a78bfa;
-      --accent-teal: #2dd4bf;
       --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
       --code-bg: #090d16;
     }
@@ -38,7 +37,6 @@
       --accent-amber: #d97706;
       --accent-coral: #dc2626;
       --accent-purple: #7c3aed;
-      --accent-teal: #0d9488;
       --shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.08);
       --code-bg: #f1f5f9;
     }
@@ -101,7 +99,6 @@
     .badge-amber { background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
     .badge-coral { background: rgba(248, 113, 113, 0.15); color: var(--accent-coral); border: 1px solid var(--accent-coral); }
     .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); border: 1px solid var(--accent-purple); }
-    .badge-teal { background: rgba(45, 212, 191, 0.15); color: var(--accent-teal); border: 1px solid var(--accent-teal); }
 
     .provenance-line {
       margin-top: 0.4rem;
@@ -289,7 +286,7 @@
       cursor: pointer;
       transition: all 0.15s ease;
     }
-    .stack-item:hover, .stack-item.active { border-color: var(--accent-teal); background: rgba(45, 212, 191, 0.08); }
+    .stack-item:hover, .stack-item.active { border-color: var(--accent-blue); background: rgba(56, 189, 248, 0.08); }
 
     .progress-bar-outer {
       width: 100%;
@@ -438,13 +435,13 @@
         </p>
         <div class="grid-2" style="margin-bottom: 0;">
           <div class="stack-list" id="stackList">
-            <div class="stack-item active" onclick="selectStack(0)"><strong>1. Instructions (System Prompt &amp; Guardrails)</strong><span class="badge badge-teal">00:03:50</span></div>
-            <div class="stack-item" onclick="selectStack(1)"><strong>2. User Input (Current Turn Ask / Trigger)</strong><span class="badge badge-teal">00:03:58</span></div>
-            <div class="stack-item" onclick="selectStack(2)"><strong>3. Retrieved Facts (Selected High-Signal Snippets)</strong><span class="badge badge-teal">00:04:01</span></div>
-            <div class="stack-item" onclick="selectStack(3)"><strong>4. Tools (Permitted Function Definitions)</strong><span class="badge badge-teal">00:04:08</span></div>
-            <div class="stack-item" onclick="selectStack(4)"><strong>5. Short-Term Notes (Recent Step Summary)</strong><span class="badge badge-teal">00:04:17</span></div>
-            <div class="stack-item" onclick="selectStack(5)"><strong>6. Long-Term Memory (Stable Project/Strategy Facts)</strong><span class="badge badge-teal">00:04:26</span></div>
-            <div class="stack-item" onclick="selectStack(6)"><strong>7. Output Format (Strict Schema Lock)</strong><span class="badge badge-teal">00:04:35</span></div>
+            <div class="stack-item active" onclick="selectStack(0)"><strong>1. Instructions (System Prompt &amp; Guardrails)</strong><span class="badge badge-blue">00:03:50</span></div>
+            <div class="stack-item" onclick="selectStack(1)"><strong>2. User Input (Current Turn Ask / Trigger)</strong><span class="badge badge-blue">00:03:58</span></div>
+            <div class="stack-item" onclick="selectStack(2)"><strong>3. Retrieved Facts (Selected High-Signal Snippets)</strong><span class="badge badge-blue">00:04:01</span></div>
+            <div class="stack-item" onclick="selectStack(3)"><strong>4. Tools (Permitted Function Definitions)</strong><span class="badge badge-blue">00:04:08</span></div>
+            <div class="stack-item" onclick="selectStack(4)"><strong>5. Short-Term Notes (Recent Step Summary)</strong><span class="badge badge-blue">00:04:17</span></div>
+            <div class="stack-item" onclick="selectStack(5)"><strong>6. Long-Term Memory (Stable Project/Strategy Facts)</strong><span class="badge badge-blue">00:04:26</span></div>
+            <div class="stack-item" onclick="selectStack(6)"><strong>7. Output Format (Strict Schema Lock)</strong><span class="badge badge-blue">00:04:35</span></div>
           </div>
           <div class="inspector-pane" id="stackDetail">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
@@ -1025,7 +1022,7 @@
       listEl.innerHTML = stackLayers.map((layer, idx) => `
         <div class="stack-item ${idx === currentStackIdx ? 'active' : ''}" onclick="selectStack(${idx})">
           <div><strong>${layer.num}. ${layer.name}</strong></div>
-          <span class="badge badge-teal">${layer.time}</span>
+          <span class="badge badge-blue">${layer.time}</span>
         </div>
       `).join("");
 
