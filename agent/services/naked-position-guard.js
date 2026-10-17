@@ -1441,11 +1441,33 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
             `UPDATE monitored_positions SET current_sl = NULL
               WHERE id = ? AND status = 'active' AND current_sl = ?`
           )
+          // Codex P2 (round 4) on #1398: the snapshot this audit read can be
+          // older than a stop another controller has since installed, so the
+          // clear waits for a FRESH broker read of the position: still no stop
+          // → clear; a stop now → the book takes the broker's stop instead.
+          const adoptFresh = db.prepare(
+            `UPDATE monitored_positions SET current_sl = ?
+              WHERE id = ? AND status = 'active' AND current_sl = ?`
+          )
           for (const f of prot.naked) {
             if (f.ourSl == null || f.monitoredId == null) continue
+            let fresh
+            try { fresh = await readPosition(f) } catch (e) {
+              out.errors.push(`${id}: ${f.symbol} position ${f.positionId} — fresh read before the book clear failed (${e?.message || e}); book left as is`)
+              continue
+            }
+            if (!fresh) continue // gone at the broker: the reconciler's to settle
+            const freshSl = Number(fresh.stopLoss)
+            if (fresh.stopLoss != null && Number.isFinite(freshSl) && freshSl > 0) {
+              if (adoptFresh.run(freshSl, f.monitoredId, f.ourSl).changes) {
+                out.stopsAdopted++
+                console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — broker now holds ${freshSl}; book takes it`)
+              }
+              continue
+            }
             if (clearStale.run(f.monitoredId, f.ourSl).changes) {
               out.staleStopsCleared++
-              console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — book stop ${f.ourSl} cleared, the broker holds none`)
+              console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — book stop ${f.ourSl} cleared, the broker holds none (fresh read)`)
             }
           }
           const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers

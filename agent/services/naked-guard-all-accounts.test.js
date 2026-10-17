@@ -70,7 +70,10 @@ function broker(book) {
     },
     sizing: { getVolumeMeta: async () => ({ lotSize: 100, digits: 4 }) },
   }
-  return { exec, amends, lossGuardianDeps }
+  // The audit's fresh per-position read (wsReconcile) — same book by default.
+  const fresh = { override: null }
+  const wsReconcile = async (_h, _c, _s, _t, accountId) => ({ position: fresh.override ? fresh.override(String(accountId)) : snapshot(String(accountId)) })
+  return { exec, amends, lossGuardianDeps, wsReconcile, fresh }
 }
 
 const creds = { ready: true, isLive: false, accountId: SELECTED, host: 'demo', clientId: 'id', clientSecret: 's', accessToken: 't' }
@@ -145,7 +148,7 @@ test('two naked accounts in one sweep: each gets its own stop, one amend per acc
 test('a stale stop on our record with a broker-naked position: the book is corrected and the guardian places a stop', async () => {
   seed(OTHER, '628184260', { sl: 0.2264 }) // our record says protected
   const b = broker({ [OTHER]: [{ positionId: '628184260' }] }) // the broker holds no stop
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 1)
   assert.equal(out.staleStopsCleared, 1)
   assert.equal(out.nakedStops, 1, 'RED before: the guardian read the stale record stop and held')
@@ -173,4 +176,24 @@ test('the audit-triggered guardian run touches only the naked positions it found
   const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
   assert.equal(out.naked, 1)
   assert.deepEqual(closes.filter(id => String(id) === '999'), [], 'RED before: the protected position was closed by the time cap')
+})
+
+// Codex P1 (round 4) on #1398: a broker stop of 0 is no stop.
+test('a broker stop reported as 0 is naked to the guardian too: it places a stop', async () => {
+  seed(OTHER, '628184260')
+  const b = broker({ [OTHER]: [{ positionId: '628184260', stopLoss: 0 }] })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
+  assert.equal(out.naked, 1, 'the audit already reads 0 as naked')
+  assert.equal(out.nakedStops, 1, 'RED before: the guardian read 0 as a stop and held')
+  assert.equal(b.amends.length, 1)
+})
+
+// Codex P2 (round 4) on #1398: the record is cleared only after a fresh read.
+test('a stop installed since the audit read: the book takes the broker stop instead of being cleared', async () => {
+  seed(OTHER, '628184260', { sl: 0.2264 })
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }] }) // audit snapshot: no stop
+  b.fresh.override = () => [{ positionId: '628184260', price: 0.223, stopLoss: 0.2261, takeProfit: 0.215, tradeData: { symbolId: 10, tradeSide: 2, volume: 14 } }]
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
+  assert.equal(out.staleStopsCleared, 0, 'RED before: the record was cleared although the broker now holds a stop')
+  assert.equal(db.prepare('SELECT current_sl FROM monitored_positions WHERE account_id = ?').get(OTHER).current_sl, 0.2261, 'the book takes the fresh broker stop')
 })

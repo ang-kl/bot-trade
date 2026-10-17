@@ -55,6 +55,12 @@ const creds = { ready: true, isLive: false, accountId: A }
 // adding one field to any fixture would put a unit test one step from
 // `exec-engine.amendPosition` — under EXEC_ENGINE=cpp, an HTTP POST to a
 // sidecar. Vacuous coverage AND a live edge; injected shut.
+// Claude · № 15,292 17-Oct (Codex P2 round 4 on #1398): the audit re-reads a
+// position live (wsReconcile) before clearing a stale record stop. These tests
+// are not about that clear: the injected read answers "position not found",
+// so the book is left as is and no real socket is ever reached.
+const noFreshRead = async () => ({ position: [] })
+
 const inertTp = {
   makeTargetSuggester: () => async () => null,
   makeTargetApplier: () => async () => ({ ok: false, error: 'inert in test' }),
@@ -76,7 +82,7 @@ test('it sweeps EVERY enabled account, each against its own broker snapshot', as
         : { position: [{ positionId: '222', stopLoss: null, takeProfit: null }] }
     },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.deepEqual(asked.sort(), [A, B].sort(), 'both accounts asked')
   assert.equal(out.accounts, 2)
   assert.equal(out.naked, 1, 'the account whose broker holds no stop is reported naked')
@@ -91,7 +97,7 @@ test('one account failing does not silence the others', async () => {
       return { position: [{ positionId: '222', stopLoss: null, takeProfit: null }] }
     },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.errors.length, 1, 'the failure is reported, not swallowed')
   assert.match(out.errors[0], /broker timeout/)
   assert.equal(out.accounts, 1, 'and the other account was still audited')
@@ -103,7 +109,7 @@ test('known token refusals are named without another broker call, and clear when
   setState(db, 'cpp_exec_refused_accounts_json', JSON.stringify([A]))
   const asked = []
   const exec = { reconcile: async c => { asked.push(c.accountId); return { position: [] } } }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.deepEqual(asked, [B], 'do not trigger auth retries/refreshes for a known refusal')
   assert.equal(out.accounts, 1)
   assert.equal(out.blind, false)
@@ -114,7 +120,7 @@ test('known token refusals are named without another broker call, and clear when
   assert.match(lastProtectionAudit(db).summary, new RegExp(A), 'whole-book view keeps the named gap')
   setState(db, 'cpp_exec_refused_accounts_json', '[]')
   asked.length = 0
-  const recovered = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const recovered = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.deepEqual(asked.sort(), [A, B].sort())
   assert.equal(recovered.unauditable.length, 0)
   assert.equal(lastProtectionAudit(db, { accountId: A }).ok, true)
@@ -171,7 +177,7 @@ test('a hung account cannot starve healthy accounts or start overlapping reads o
 
 test('an account clean on both sides is counted, not skipped', async () => {
   const exec = { exec: null, reconcile: async () => ({ position: [] }) }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.accounts, 2)
   assert.equal(out.naked, 0)
   assert.equal(out.errors.length, 0)
@@ -184,7 +190,7 @@ test('a BROKER position with no local row still gets audited', async () => {
   const exec = {
     reconcile: async () => ({ position: [{ positionId: '999', stopLoss: null, takeProfit: null }] }),
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.accounts, 2, 'both swept despite zero local rows')
   assert.equal(out.errors.length, 0)
 })
@@ -205,7 +211,7 @@ test('only the SAME side is swept — a demo token cannot read a live account', 
   const exec = {
     reconcile: async (c) => { asked.push(String(c.accountId)); return { position: [] } },
   }
-  await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.ok(!asked.includes('42993489'), 'the live account is not swept with demo credentials')
 })
 
@@ -226,7 +232,7 @@ test('an UNAUDITABLE account is reported apart from a real failure', async () =>
       return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
     },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.errors.length, 0, 'an unreachable account is not an audit failure')
   assert.equal(out.unauditable.length, 1)
   assert.match(out.unauditable[0], new RegExp(B))
@@ -237,7 +243,7 @@ test('a NON-auth failure on a reachable account still fails the sweep', async ()
   // The safe default: anything not a recognised authorisation refusal means
   // we tried to check and could not, which is a protection question.
   const exec = { reconcile: async () => { throw new Error('socket hang up') } }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.unauditable.length, 0)
   assert.equal(out.errors.length, 2, 'both accounts report a real failure')
 })
@@ -260,7 +266,7 @@ test('CANT_ROUTE_REQUEST is an access fact, so it does not fail the sweep', asyn
       return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
     },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.errors.length, 0, 'the broker refusing to route is not a protection finding')
   assert.equal(out.unauditable.length, 1)
   assert.equal(out.accounts, 1, 'the reachable account was still audited')
@@ -277,7 +283,7 @@ test('THE COUNTERWEIGHT: a sweep that reached NO account is blind, not clean', a
   const exec = {
     reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.accounts, 0)
   assert.equal(out.unauditable.length, 2)
   assert.equal(out.errors.length, 0, 'still not per-account failures')
@@ -288,7 +294,7 @@ test('blind is about reaching nothing, not about finding nothing', async () => {
   // Two clean accounts is the healthiest possible outcome and must never be
   // confused with the case above.
   const exec = { reconcile: async () => ({ position: [] }) }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.accounts, 2)
   assert.equal(out.blind, false)
 })
@@ -303,7 +309,7 @@ test('blind is measured against the enabled roster, not against the id list', as
   const exec = {
     reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.accounts, 0)
   assert.equal(out.unauditable.length, 1, 'only the selected account was in the sweep')
   assert.equal(out.blind, false, 'there was nothing we were obliged to reach')
@@ -314,7 +320,7 @@ test('and an enabled roster that is wholly unreachable is STILL blind', async ()
   const exec = {
     reconcile: async () => { throw new Error('cTrader error: CANT_ROUTE_REQUEST — Cannot route request') },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.blind, true)
 })
 
@@ -331,7 +337,7 @@ test('an unauditable account leaves a named gap in the work product, not just a 
       return { position: [{ positionId: '111', stopLoss: 1.05, takeProfit: 1.09 }] }
     },
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.blind, false, 'the sweep really did verify an account')
 
   const rec = JSON.parse(db.prepare('SELECT value v FROM agent_state WHERE key = ?')
@@ -515,7 +521,7 @@ test('the sweep CORRECTS a stop disagreement, not just reports it', async () => 
 
   // The broker holds a TIGHTER stop than the book — adoptable.
   const exec = { reconcile: async () => ({ position: [{ positionId: '555', stopLoss: 1.095, takeProfit: 1.15 }] }) }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.phantom, 1, 'the disagreement is still reported')
   assert.equal(out.stopsAdopted, 1, 'and the book was corrected')
   const after = db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(t.lastInsertRowid)
@@ -531,7 +537,7 @@ test('the sweep does NOT adopt a wider broker stop — the alert must survive', 
   ).run(t.lastInsertRowid, 'EURUSD', 'active', A, 1.09, 1.15, 'long', 1.10, 'bot')
 
   const exec = { reconcile: async () => ({ position: [{ positionId: '556', stopLoss: 1.085, takeProfit: 1.15 }] }) }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec, wsReconcile: noFreshRead })
   assert.equal(out.phantom, 1)
   assert.equal(out.stopsAdopted, 0, 'a wider stop is real unresolved exposure — it stays reported')
   const after = db.prepare('SELECT current_sl FROM monitored_positions WHERE trade_id = ?').get(t.lastInsertRowid)

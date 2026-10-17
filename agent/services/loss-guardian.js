@@ -113,6 +113,15 @@ function atrFromBars(bars, period) {
 // Codex · №12,130 · 2026-10-08; codex-footprint: loss-guardian-ratchet.
 // No shared symbol map or guessed direction: this account's reconcile is the
 // authority. Refuse incomplete/contradictory identity before sizing an amend.
+// Claude · № 15,292 17-Oct (owner authorised, Codex P1 round 4 on #1398;
+// claude-builder). A broker stop of 0 (or anything non-positive / unreadable)
+// is NO stop — the protection audit already reads it that way; read through
+// `??` it was a stop, and the guardian neither placed one nor closed.
+function brokerStopOf(bp) {
+  const v = Number(bp?.stopLoss)
+  return bp?.stopLoss != null && Number.isFinite(v) && v > 0 ? v : null
+}
+
 function nakedStopIdentity(r, bp, accountId) {
   const integer = raw => (typeof raw === 'number' || (typeof raw === 'string' && /^[0-9]+$/.test(raw)))
     && Number.isSafeInteger(Number(raw)) && Number(raw) > 0 ? Number(raw) : null
@@ -213,7 +222,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
       .map(r => ({ r, bp: live.get(String(r.position_id)) }))
       .filter(x => x.bp)
       .filter(({ r, bp }) => {
-        if ((bp.stopLoss ?? r.current_sl) != null) return true
+        if ((brokerStopOf(bp) ?? r.current_sl) != null) return true
         const identity = nakedStopIdentity(r, bp, accountId)
         if (!identity) {
           summary.refused++
@@ -236,7 +245,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
     // parameters that actually determine the value.
     const atrCache = new Map()
     const atrKey = (symbolId, c) => `${symbolId}|${c.atrTimeframe}|${c.atrPeriod}`
-    const naked = involved.filter(x => (x.bp.stopLoss ?? x.r.current_sl) == null)
+    const naked = involved.filter(x => (brokerStopOf(x.bp) ?? x.r.current_sl) == null)
     for (const x of naked) {
       const id = x.bp.tradeData?.symbolId
       if (!id) continue
@@ -277,7 +286,7 @@ async function lossGuardianPass(db, creds, deps = {}) {
           ? (stopIdentities.get(String(r.position_id)).dir === 1 ? 'BUY' : 'SELL') : r.side,
         entry: bp.price ?? r.entry_price,
         price,
-        currentSl: bp.stopLoss ?? r.current_sl,
+        currentSl: brokerStopOf(bp) ?? r.current_sl,
         atr: atrCache.get(atrKey(td.symbolId, rowCfg)) ?? null,
         digits: meta.digits,
         ageHours,
