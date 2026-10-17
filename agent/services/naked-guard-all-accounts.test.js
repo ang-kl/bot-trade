@@ -139,3 +139,16 @@ test('two naked accounts in one sweep: each gets its own stop, one amend per acc
   assert.equal(out.nakedDeferred, 0)
   assert.deepEqual(b.amends.map(a => [a.account, a.positionId]).sort(), [[OTHER, 628184260], [SELECTED, 111]].sort())
 })
+
+// Codex P1 (round 2) on #1398: a stop left on our record while the broker
+// holds none must not hide the position from the guardian.
+test('a stale stop on our record with a broker-naked position: the book is corrected and the guardian places a stop', async () => {
+  seed(OTHER, '628184260', { sl: 0.2264 }) // our record says protected
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }] }) // the broker holds no stop
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  assert.equal(out.naked, 1)
+  assert.equal(out.staleStopsCleared, 1)
+  assert.equal(out.nakedStops, 1, 'RED before: the guardian read the stale record stop and held')
+  assert.equal(b.amends.length, 1)
+  assert.equal(b.amends[0].account, OTHER)
+})

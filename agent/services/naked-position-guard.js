@@ -1114,11 +1114,11 @@ export async function runProtectionAuditBothSides(db, baseCreds, deps = {}) {
     return run(db, c, deps)
   }))
   const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0,
-    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
+    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
   for (const result of results) {
     if (result.status === 'rejected') { out.errors.push(result.reason?.message || String(result.reason)); continue }
     const r = result.value
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred', 'staleStopsCleared']) out[key] += r[key] || 0
     out.errors.push(...(r.errors || []))
     out.unauditable.push(...(r.unauditable || []))
     out.blind ||= !!r.blind
@@ -1177,7 +1177,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
 }
 
 async function protectionAuditPass(db, baseCreds, deps, side) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -1225,7 +1225,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   )
 
   const auditOne = async (id) => {
-    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [] }
+    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, staleStopsCleared: 0, errors: [], unauditable: [] }
     try {
       const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
       if (!creds?.ready) return out
@@ -1431,6 +1431,23 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
       // case defers.
       if (prot.naked.length) {
         try {
+          // Codex P1 (round 2) on #1398: the guardian judges nakedness from
+          // `bp.stopLoss ?? current_sl`, so a stop left on our record while the
+          // broker holds NONE hides the position from it and it holds forever.
+          // The book is corrected to broker truth first — a local write, no
+          // broker call, guarded on the value this audit read so a concurrent
+          // writer is never overwritten — the same direction as adoptBrokerStops.
+          const clearStale = db.prepare(
+            `UPDATE monitored_positions SET current_sl = NULL
+              WHERE id = ? AND status = 'active' AND current_sl = ?`
+          )
+          for (const f of prot.naked) {
+            if (f.ourSl == null || f.monitoredId == null) continue
+            if (clearStale.run(f.monitoredId, f.ourSl).changes) {
+              out.staleStopsCleared++
+              console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — book stop ${f.ourSl} cleared, the broker holds none`)
+            }
+          }
           const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
           const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
           const g = await queueNakedGuard(db, () => {
@@ -1527,7 +1544,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   }))
   for (let i = 0; i < results.length; i++) {
     const r = results[i]
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred', 'staleStopsCleared']) out[key] += r[key] || 0
     out.errors.push(...r.errors)
     out.unauditable.push(...r.unauditable)
     if (r.accounts && obliged.has(ids[i])) reachedObliged++
