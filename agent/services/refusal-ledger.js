@@ -273,7 +273,7 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     }
     const fetched = normaliseBars(bars) // V3 L2b W13: {t,o,h,l,c} → tuples
     const window = fetched.filter(b => Number(b?.[0]) >= it.firstMs)
-    const r = replayExit(window, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs }, { timeCapMin: it.horizonMin })
+    const r = replayExit(window, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs, barMs: tfMin * 60_000 }, { timeCapMin: it.horizonMin })
     if (r.ok) {
       insertScore(db, it, { nowMs, outcome: r.reason, rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
     } else if (r.ambiguous) {
@@ -487,7 +487,7 @@ export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(),
         if (!isAnchor && !(Number.isFinite(firstBarMs) && firstBarMs <= it.firstMs)) continue
         const endMs = it.firstMs + it.horizonMin * 60_000
         const window = bars.filter(b => Number(b?.[0]) >= it.firstMs && Number(b?.[0]) <= endMs)
-        const r = replayExit(window, { side: it.row.side, entry: num(it.row.entry), sl: num(it.row.sl), tp: num(it.row.tp), openedAtMs: it.firstMs }, { timeCapMin: it.horizonMin })
+        const r = replayExit(window, { side: it.row.side, entry: num(it.row.entry), sl: num(it.row.sl), tp: num(it.row.tp), openedAtMs: it.firstMs, barMs: (tfMinutes(tf) ?? 60) * 60_000 }, { timeCapMin: it.horizonMin })
         if (r.ok) settle(key, r.reason, { rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
         else if (r.ambiguous) settle(key, 'ambiguous', { barsUsed: r.barsUsed ?? null, detail: r.reason })
         else settle(key, window.length ? 'truncated' : 'no_bars', { barsUsed: window.length, detail: r.reason })

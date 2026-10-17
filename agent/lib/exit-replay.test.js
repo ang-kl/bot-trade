@@ -258,7 +258,8 @@ test('the shipped rule set covers the audit question and names every rule', () =
 
 test('#84: a cap ending exactly at a bar close exits at THAT close, not the next bar\'s open', () => {
   const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(30, 100.3, 100.6, 100.25, 100.4)]
-  const r = replayExit(bars, LONG, { timeCapMin: 30 })
+  // Two bars prove no bar size (one spacing may be a gap): the caller says 30 min.
+  const r = replayExit(bars, { ...LONG, barMs: 30 * MIN }, { timeCapMin: 30 })
   assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.2)
   // Stamped at the expiry, not the bar's open (Codex round 1 on #1404).
   assert.equal(r.exitAtMs, t0 + 30 * MIN); assert.equal(r.heldMin, 30)
@@ -288,7 +289,7 @@ test('#84: a cap ending inside a bar that touches the target, the stop or the pa
 
 test('#84: a cap that expired inside the skipped entry bar is ambiguous, not scored at a later bar', () => {
   const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4)]
-  const r = replayExit(bars, { ...LONG, openedAtMs: t0 + 10 * MIN }, { timeCapMin: 30 })
+  const r = replayExit(bars, { ...LONG, openedAtMs: t0 + 10 * MIN, barMs: 60 * MIN }, { timeCapMin: 30 })
   assert.equal(r.ok, false); assert.equal(r.ambiguous, true); assert.match(r.reason, /entry bar/)
 })
 
@@ -322,4 +323,19 @@ test('#84: the expiry bar opens past the partial level → partial banked, then 
   assert.equal(r.reason, 'time_cap'); assert.equal(r.capInsideBar, true)
   assert.equal(r.partial.r, 0.3); assert.equal(r.runnerR, 0.4)
   assert.equal(r.rMultiple, 0.35, 'half at +0.3R, half at the close +0.4R')
+})
+
+// Codex round 2 on #1404: a lone spacing may be a gap, not a bar.
+test('#84: two bars six hours apart prove no bar size — the cap is ambiguous unless the caller says the timeframe', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(360, 100.5, 100.6, 100.4, 100.5)]
+  const r = replayExit(bars, LONG, { timeCapMin: 90 })
+  assert.equal(r.ok, false); assert.equal(r.ambiguous, true); assert.match(r.reason, /bar size is unknown/)
+  const h = replayExit(bars, { ...LONG, barMs: 60 * MIN }, { timeCapMin: 90 })
+  assert.equal(h.reason, 'time_cap'); assert.equal(h.exitPrice, 100.5, 'hourly bars: the expiry fell in the gap → the 06:00 open')
+})
+
+test('#84: without a caller timeframe the bar size is the smallest spacing seen at least twice (a gap is ignored)', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4), bar(120, 100.4, 100.5, 100.3, 100.45), bar(420, 100.6, 100.9, 100.5, 100.8)]
+  const r = replayExit(bars, LONG, { timeCapMin: 200 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.6, 'hourly from the repeated spacing; the expiry fell in the gap')
 })

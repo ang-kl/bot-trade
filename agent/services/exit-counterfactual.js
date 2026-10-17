@@ -21,6 +21,7 @@
 import { cleanBotOrigin } from '../lib/trade-origin.js'
 import { strategyAttrSql } from '../lib/strategy-attribution.js'
 import { parseBars, replayExit, summariseReplay, DEFAULT_RULES } from '../lib/exit-replay.js'
+import { tfMs } from '../lib/timeframes.js'
 import { lastStateBeforeExit } from './position-events.js'
 
 /**
@@ -136,6 +137,10 @@ export function exitCounterfactual(db, {
       sl: row.sl_price,
       tp: row.tp_price,
       openedAtMs: ms(row.opened_at),
+      // The postmortem fetched these bars at the trade's timeframe, 1h when
+      // unlabelled (loss-postmortem.js); the replay places a cap's expiry on
+      // that bar size (Codex round 2 on #1404).
+      barMs: tfMs(row.label_timeframe || '1h') || null,
     }, rule))
     return { rule: rule.name, spec: rule, ...summariseReplay(results) }
   })

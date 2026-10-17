@@ -35,6 +35,7 @@ import { replayExit, summariseReplay, favourableExcursion, DEFAULT_RULES, entryB
 // worker whose module state is not primed at boot, so the cached tree is read here (read-only).
 import { classOfSymbol, initAssetClasses, assetClassStatus } from '../lib/asset-class.js'
 import { getState } from '../db.js'
+import { tfMs } from '../lib/timeframes.js'
 import { loadResearchConfig, withOverrides } from '../lib/research-config.js'
 import { loadManagedExit } from './managed-exit.js'
 import { familyOf } from './strategies.js'
@@ -209,7 +210,8 @@ export function exitCounterfactualExtended(db, {
   const tradeFor = (row, rule) => {
     let tp = num(row.tp_price)
     if (rule.tpSource === 'design') tp = dz?.targets.get(row.id) ?? null
-    return { side: row.side, entry: row.entry_price, sl: stopOf(row), tp, openedAtMs: ms(row.opened_at), _noTp: rule.tpSource === 'design' && tp == null }
+    // barMs: the postmortem's fetch timeframe, 1h when unlabelled (Codex round 2 on #1404).
+    return { side: row.side, entry: row.entry_price, sl: stopOf(row), tp, openedAtMs: ms(row.opened_at), barMs: tfMs(row.label_timeframe || '1h') || null, _noTp: rule.tpSource === 'design' && tp == null }
   }
   const replayOne = (e, rule) => {
     const t = tradeFor(e.row, rule)
