@@ -1445,51 +1445,69 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
           // older than a stop another controller has since installed, so the
           // clear waits for a FRESH broker read of the position: still no stop
           // → clear; a stop now → the book takes the broker's stop instead.
+          //
+          // Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after
+          // № 15,306; Codex round 5 on #1398; claude-builder). EVERY naked
+          // finding is re-read, not only those with a stale book stop: a row
+          // whose book is already NULL took no fresh read, so a stop installed
+          // after the snapshot was never written back (later audits do not call
+          // NULL book + broker stop a phantom) — P2 4301830804. And the guardian
+          // runs only on the positions still naked at that read: its time cap is
+          // judged before its stop check (loss-guardian.js decideLossGuardian),
+          // so a position found protected here and passed on anyway could be
+          // closed for age alone — P1 4301864278. A failed read keeps the
+          // finding in scope: the snapshot said naked, and a read that keeps
+          // failing must not leave real money naked (the F-NEW-2 shape).
           const adoptFresh = db.prepare(
             `UPDATE monitored_positions SET current_sl = ?
-              WHERE id = ? AND status = 'active' AND current_sl = ?`
+              WHERE id = ? AND status = 'active' AND current_sl IS ?`
           )
+          const guardIds = []
           for (const f of prot.naked) {
-            if (f.ourSl == null || f.monitoredId == null) continue
             let fresh
             try { fresh = await readPosition(f) } catch (e) {
-              out.errors.push(`${id}: ${f.symbol} position ${f.positionId} — fresh read before the book clear failed (${e?.message || e}); book left as is`)
+              out.errors.push(`${id}: ${f.symbol} position ${f.positionId} — fresh read failed (${e?.message || e}); guarded on the audit's snapshot, book left as is`)
+              guardIds.push(String(f.positionId))
               continue
             }
             if (!fresh) continue // gone at the broker: the reconciler's to settle
             const freshSl = Number(fresh.stopLoss)
             if (fresh.stopLoss != null && Number.isFinite(freshSl) && freshSl > 0) {
-              if (adoptFresh.run(freshSl, f.monitoredId, f.ourSl).changes) {
+              if (f.monitoredId != null && f.ourSl !== freshSl && adoptFresh.run(freshSl, f.monitoredId, f.ourSl).changes) {
                 out.stopsAdopted++
                 console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — broker now holds ${freshSl}; book takes it`)
               }
-              continue
+              continue // protected now: not the guardian's
             }
-            if (clearStale.run(f.monitoredId, f.ourSl).changes) {
+            guardIds.push(String(f.positionId))
+            if (f.ourSl != null && f.monitoredId != null && clearStale.run(f.monitoredId, f.ourSl).changes) {
               out.staleStopsCleared++
               console.log(`[protection] ${id}: ${f.symbol} position ${f.positionId} — book stop ${f.ourSl} cleared, the broker holds none (fresh read)`)
             }
           }
-          const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
-          const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
-          const g = await queueNakedGuard(db, () => {
-            if (layers().includes('loss_guardian')) return null
-            return runLossGuardian(db, creds, {
-              notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
-              // Codex P1 (round 3) on #1398: only the positions this audit
-              // found naked; nothing else on the account is evaluated.
-              onlyPositionIds: prot.naked.map(f => String(f.positionId)),
-              ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
+          // Every finding protected or gone at the fresh read: nothing to guard.
+          if (guardIds.length) {
+            const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
+            const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
+            const g = await queueNakedGuard(db, () => {
+              if (layers().includes('loss_guardian')) return null
+              return runLossGuardian(db, creds, {
+                notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
+                // Codex P1 (round 3) on #1398: only the positions this audit
+                // found naked, and (round 5) still naked at the fresh read.
+                onlyPositionIds: guardIds,
+                ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
+              })
             })
-          })
-          if (g == null) {
-            out.nakedDeferred += prot.naked.length
-            printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${prot.naked.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
-          } else {
-            out.nakedStops += g?.stops || 0
-            out.nakedCloses += g?.closes || 0
-            for (const e of (g?.errors || [])) out.errors.push(`${id}: naked guard — ${e}`)
-            console.log(`[protection] ${id}: ${prot.naked.length} naked — Loss Guardian ran for this account: ${g?.stops || 0} stop(s), ${g?.closes || 0} close(s), ${(g?.deferred || []).length} deferred`)
+            if (g == null) {
+              out.nakedDeferred += guardIds.length
+              printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${guardIds.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
+            } else {
+              out.nakedStops += g?.stops || 0
+              out.nakedCloses += g?.closes || 0
+              for (const e of (g?.errors || [])) out.errors.push(`${id}: naked guard — ${e}`)
+              console.log(`[protection] ${id}: ${guardIds.length} naked — Loss Guardian ran for this account: ${g?.stops || 0} stop(s), ${g?.closes || 0} close(s), ${(g?.deferred || []).length} deferred`)
+            }
           }
         } catch (err) {
           out.errors.push(`${id}: naked guard failed — ${err?.message || err}`)

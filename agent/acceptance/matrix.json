@@ -765,6 +765,10 @@
         {
           "file": "agent/services/naked-guard-all-accounts.test.js",
           "title": "the guardian already in flight: the naked finding is deferred and said, never reported as guarded"
+        },
+        {
+          "file": "agent/services/naked-guard-all-accounts.test.js",
+          "title": "time cap on, two naked, one protected at the fresh read: only the still-naked one is in the guardian run"
         }
       ]
     },

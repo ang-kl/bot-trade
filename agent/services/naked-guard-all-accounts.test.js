@@ -82,7 +82,7 @@ test('a naked position on a NON-selected account gets the guardian stop, on that
   seed(SELECTED, '111', { sl: 0.23 })
   seed(OTHER, '628184260')
   const b = broker({ [SELECTED]: [{ positionId: '111', stopLoss: 0.23 }], [OTHER]: [{ positionId: '628184260' }] })
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 1)
   assert.equal(out.nakedStops, 1, 'the naked position on the other account got a stop')
   assert.equal(b.amends.length, 1)
@@ -101,7 +101,7 @@ test('a naked position on a NON-selected account gets the guardian stop, on that
 test('no naked position: the guardian is not run by the audit', async () => {
   seed(OTHER, '628184260', { sl: 0.2264 })
   const b = broker({ [OTHER]: [{ positionId: '628184260', stopLoss: 0.2264 }] })
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 0)
   assert.equal(out.nakedStops, 0)
   assert.equal(b.amends.length, 0)
@@ -112,7 +112,7 @@ test('the guardian already in flight: the naked finding is deferred and said, ne
   const b = broker({ [OTHER]: [{ positionId: '628184260' }] })
   let release
   const held = singleFlight('loss_guardian', () => new Promise(r => { release = r }))
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   release({}); await held
   assert.equal(out.naked, 1)
   assert.equal(out.nakedStops, 0)
@@ -123,7 +123,7 @@ test('the guardian already in flight: the naked finding is deferred and said, ne
 test('a naked broker position whose ledger side contradicts the broker is refused, not amended', async () => {
   seed(OTHER, '628184260', { side: 'long' }) // broker says SELL (tradeSide 2)
   const b = broker({ [OTHER]: [{ positionId: '628184260' }] })
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 1)
   assert.equal(out.nakedStops, 0)
   assert.equal(b.amends.length, 0)
@@ -136,7 +136,7 @@ test('two naked accounts in one sweep: each gets its own stop, one amend per acc
   seed(SELECTED, '111')
   seed(OTHER, '628184260')
   const b = broker({ [SELECTED]: [{ positionId: '111' }], [OTHER]: [{ positionId: '628184260' }] })
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 2)
   assert.equal(out.nakedStops, 2, 'RED before: the second account joined the first pass and counted its stop')
   assert.equal(out.nakedDeferred, 0)
@@ -173,7 +173,7 @@ test('the audit-triggered guardian run touches only the naked positions it found
     for (const p of r.position) p.tradeData.openTimestamp = Date.now() - 10 * 3_600_000
     return r
   }
-  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.naked, 1)
   assert.deepEqual(closes.filter(id => String(id) === '999'), [], 'RED before: the protected position was closed by the time cap')
 })
@@ -196,4 +196,103 @@ test('a stop installed since the audit read: the book takes the broker stop inst
   const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
   assert.equal(out.staleStopsCleared, 0, 'RED before: the record was cleared although the broker now holds a stop')
   assert.equal(db.prepare('SELECT current_sl FROM monitored_positions WHERE account_id = ?').get(OTHER).current_sl, 0.2261, 'the book takes the fresh broker stop')
+})
+
+// Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after № 15,306;
+// Codex round 5 on #1398; claude-builder). Every naked finding is re-read
+// fresh; the guardian runs only on the ones still naked at that read.
+const freshPos = (positionId, stopLoss) => ({ positionId, price: 0.223, stopLoss, takeProfit: 0.215, tradeData: { symbolId: 10, tradeSide: 2, volume: 14 } })
+
+// P2 4301830804 + P1 4301864278: book NULL, snapshot naked, a stop installed
+// since — the book takes it and the aged position is NOT closed for age.
+test('book NULL, a stop installed since the snapshot: the book takes it and the guardian leaves the position alone', async () => {
+  const { setState } = await import('../db.js')
+  setState(db, 'loss_guardian_json', JSON.stringify({ maxHoldHours: 1 }))
+  seed(OTHER, '628184260') // book NULL
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }] }) // audit snapshot: no stop
+  b.fresh.override = () => [freshPos('628184260', 0.2261)]
+  const closes = []
+  // The guardian's own read (a later one) sees the stop and an aged position;
+  // the audit's snapshot (b.exec) still reads naked.
+  const guardianExec = {
+    ...b.exec,
+    reconcile: async (c) => {
+      const r = await b.exec.reconcile(c)
+      for (const p of r.position) { p.tradeData.openTimestamp = Date.now() - 10 * 3_600_000; p.stopLoss = 0.2261 }
+      return r
+    },
+    closePosition: async (_c, args) => { closes.push(args.positionId); return { ok: true } },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: { ...b.lossGuardianDeps, exec: guardianExec }, wsReconcile: b.wsReconcile })
+  assert.equal(out.naked, 1)
+  assert.equal(out.stopsAdopted, 1, 'RED before: a NULL-book row took no fresh read')
+  assert.equal(db.prepare('SELECT current_sl FROM monitored_positions WHERE account_id = ?').get(OTHER).current_sl, 0.2261)
+  assert.deepEqual(closes, [], 'RED before: the now-protected position was closed by the time cap')
+  assert.equal(b.amends.length, 0)
+  assert.equal(out.nakedStops, 0)
+})
+
+test('two naked on one account, one protected at the fresh read: the guardian amends only the still-naked one', async () => {
+  seed(OTHER, '628184260')
+  seed(OTHER, '777')
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }, { positionId: '777' }] })
+  b.fresh.override = () => [freshPos('628184260', null), freshPos('777', 0.2262)]
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps, wsReconcile: b.wsReconcile })
+  assert.equal(out.naked, 2)
+  assert.deepEqual(b.amends.map(a => a.positionId), [628184260], 'RED before: the protected position was in the guardian run')
+  assert.equal(out.nakedStops, 1)
+})
+
+test('a naked finding gone at the fresh read: not handed to the guardian', async () => {
+  seed(OTHER, '628184260')
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }] })
+  b.fresh.override = () => []
+  let ran = 0
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    tpSuggest: inertTp, exec: b.exec, wsReconcile: b.wsReconcile,
+    lossGuardian: { runLossGuardian: async () => { ran++; return { stops: 0, closes: 0, errors: [], deferred: [] } } },
+  })
+  assert.equal(out.naked, 1)
+  assert.equal(ran, 0, 'RED before: a position the broker no longer holds was handed to the guardian')
+  assert.equal(out.nakedDeferred, 0)
+})
+
+test('the fresh read fails: the finding is still guarded on the audit snapshot, and the failure is said', async () => {
+  seed(OTHER, '628184260')
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }] })
+  const out = await runProtectionAuditAllAccounts(db, creds, {
+    tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps,
+    wsReconcile: async () => { throw new Error('socket timeout') },
+  })
+  assert.equal(out.naked, 1)
+  assert.equal(out.nakedStops, 1, 'a read that keeps failing must not leave the position naked')
+  assert.equal(b.amends.length, 1)
+  assert.ok(out.errors.some(e => /fresh read failed \(socket timeout\)/.test(e)))
+})
+
+// P1 4301864278 with the guardian running: only the still-naked position is
+// in its scope, so the time cap cannot reach the one found protected.
+test('time cap on, two naked, one protected at the fresh read: only the still-naked one is in the guardian run', async () => {
+  const { setState } = await import('../db.js')
+  setState(db, 'loss_guardian_json', JSON.stringify({ maxHoldHours: 1 }))
+  seed(OTHER, '628184260')
+  seed(OTHER, '777')
+  const b = broker({ [OTHER]: [{ positionId: '628184260' }, { positionId: '777' }] })
+  b.fresh.override = () => [freshPos('628184260', null), freshPos('777', 0.2262)]
+  const closes = []
+  const guardianExec = {
+    ...b.exec,
+    reconcile: async (c) => {
+      const r = await b.exec.reconcile(c)
+      for (const p of r.position) {
+        p.tradeData.openTimestamp = Date.now() - 10 * 3_600_000
+        if (String(p.positionId) === '777') p.stopLoss = 0.2262
+      }
+      return r
+    },
+    closePosition: async (_c, args) => { closes.push(String(args.positionId)); return { ok: true } },
+  }
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: { ...b.lossGuardianDeps, exec: guardianExec }, wsReconcile: b.wsReconcile })
+  assert.equal(out.naked, 2)
+  assert.deepEqual(closes, ['628184260'], 'RED before: the position found protected at the fresh read was closed for age')
 })
