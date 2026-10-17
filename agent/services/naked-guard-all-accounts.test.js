@@ -126,3 +126,16 @@ test('a naked broker position whose ledger side contradicts the broker is refuse
   assert.equal(b.amends.length, 0)
   assert.ok(out.errors.some(e => /naked guard — .*identity/.test(e)), 'the refusal is named')
 })
+
+// Codex P1 on #1398: accounts are audited concurrently; the guardian's one lock
+// must not hand the second account the first account's pass.
+test('two naked accounts in one sweep: each gets its own stop, one amend per account', async () => {
+  seed(SELECTED, '111')
+  seed(OTHER, '628184260')
+  const b = broker({ [SELECTED]: [{ positionId: '111' }], [OTHER]: [{ positionId: '628184260' }] })
+  const out = await runProtectionAuditAllAccounts(db, creds, { tpSuggest: inertTp, exec: b.exec, lossGuardianDeps: b.lossGuardianDeps })
+  assert.equal(out.naked, 2)
+  assert.equal(out.nakedStops, 2, 'RED before: the second account joined the first pass and counted its stop')
+  assert.equal(out.nakedDeferred, 0)
+  assert.deepEqual(b.amends.map(a => [a.account, a.positionId]).sort(), [[OTHER, 628184260], [SELECTED, 111]].sort())
+})

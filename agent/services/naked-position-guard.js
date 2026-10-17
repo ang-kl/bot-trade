@@ -1142,6 +1142,18 @@ function auditSingleFlight(db, key, work) {
   return pass
 }
 
+// Claude · № 15,286 17-Oct (Codex P1 on #1398; claude-builder). One queue per
+// database for the audit's own Loss Guardian runs: accounts are audited
+// concurrently, and the guardian's single lock would otherwise hand a second
+// account the first account's pass. A failed run does not block the next.
+const nakedGuardQueues = new WeakMap()
+function queueNakedGuard(db, work) {
+  const prev = nakedGuardQueues.get(db) || Promise.resolve()
+  const run = prev.catch(() => {}).then(work)
+  nakedGuardQueues.set(db, run.catch(() => {}))
+  return run
+}
+
 async function waitForAccount(work, budgetMs) {
   let timer
   try {
@@ -1408,18 +1420,30 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
       // already in flight (the band's own, for the selected account) calling
       // it would return THAT pass and guard nothing here, so the attempt is
       // said and left to the next sweep rather than reported as done.
+      //
+      // Codex P1 on #1398: accounts are audited CONCURRENTLY, so the check and
+      // the call must be one step and this module's own guardian runs must
+      // queue. Both modules are loaded first; the check and the call then run
+      // with no await between them (one synchronous turn: runLossGuardian
+      // takes its lock before it first awaits). Through the queue, two naked
+      // accounts in one sweep are guarded one after the other, each by its
+      // own pass; only the band's own pass can still be in flight, and that
+      // case defers.
       if (prot.naked.length) {
         try {
           const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
-          if (layers().includes('loss_guardian')) {
-            out.nakedDeferred += prot.naked.length
-            printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${prot.naked.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
-          } else {
-            const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
-            const g = await runLossGuardian(db, creds, {
+          const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
+          const g = await queueNakedGuard(db, () => {
+            if (layers().includes('loss_guardian')) return null
+            return runLossGuardian(db, creds, {
               notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
               ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
             })
+          })
+          if (g == null) {
+            out.nakedDeferred += prot.naked.length
+            printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${prot.naked.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
+          } else {
             out.nakedStops += g?.stops || 0
             out.nakedCloses += g?.closes || 0
             for (const e of (g?.errors || [])) out.errors.push(`${id}: naked guard — ${e}`)
