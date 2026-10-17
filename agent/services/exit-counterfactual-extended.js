@@ -332,7 +332,7 @@ export function exitCounterfactualExtended(db, {
     extended: true,
     accountId: accountId == null ? null : String(accountId), days, cleanOnly, strategy, excludeStrategy, family, minSample,
     stop: { basis: stop === 'initial' ? 'broker_sl_initial (rows without it excluded, counted in coverage.no_initial_stop)' : 'sl_price (as recorded)' },
-    coverage: { ...coverage, entryBarUnresolvedByRule: Object.fromEntries(perRule.map(r => [r.rule, r.entryBarUnresolved])), rule: 'clipped: no stored bar spans the fill; entry_bar_unresolved: the fill is inside a bar whose range reaches a level the rule acts on (stop, target, partial, break-even or trail level, or a close past the mean). Both excluded from every figure. Trail rules start their peak from the next bar: a known late (never false) bias.' },
+    coverage: { ...coverage, entryBarUnresolvedByRule: Object.fromEntries(perRule.map(r => [r.rule, r.entryBarUnresolved])), rule: 'clipped: no stored bar spans the fill; entry_bar_unresolved: the fill is inside a bar whose range reaches a level the rule acts on (stop, target, partial, break-even or trail level, or a close past the mean), a time cap that expires before that bar closes, or (Chandelier rules) a favourable extreme beyond the fill inside that bar. Both excluded from every figure. R-trail rules start their peak from the next bar once their level is clear of the entry bar: a known late (never false) bias.' },
     validation,
     actualSource,
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },

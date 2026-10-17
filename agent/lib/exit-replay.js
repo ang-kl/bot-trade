@@ -428,6 +428,17 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   })
   if (k < 0) return { status: 'clipped' }
   const bar = tuples[k]
+  // Claude · № 15,307 17-Oct (owner: "Build #83 and #82" after № 15,306;
+  // Codex round 4 P2s on #1394, and round 1 on #1403; claude-builder).
+  // A time cap that expires before the containing bar closes exits at a price
+  // inside that bar, which no OHLC bar shows: replayExit skips a mid-bar
+  // entry's bar and, for a fill at the open, closes at a later bar's close.
+  // Unknown either way, so the row is counted — checked before the bar-open
+  // return so a fill at the open with a cap shorter than the bar is caught.
+  const capMin = num(rule.timeCapMin)
+  if (capMin != null && capMin > 0 && tf != null && openedAtMs + capMin * 60_000 < num(bar[T]) + tf) {
+    return { status: 'entry_bar_unresolved' }
+  }
   if (num(bar[T]) === openedAtMs) return { status: 'ok' }
   const side = String(trade?.side || '').toLowerCase()
   const long = side === 'long' || side === 'buy'
@@ -442,14 +453,19 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   // Codex round 3 on #1394: break-even and the R trail move the stop once the
   // peak reaches their level. replayExit skips the entry bar, so a level the
   // entry bar reaches would arm (or not) unseen — the outcome is unknown
-  // (a scratch or a full stop), so the row is counted, not scored. The
-  // since-entry Chandelier has no level (any peak tightens it); its missed
-  // first-bar peak only makes the stop late, the bias stated in the note.
+  // (a scratch or a full stop), so the row is counted, not scored.
   if (num(rule.breakevenAtR) != null) levels.push(at(num(rule.breakevenAtR)))
   if (num(rule.trailR) != null) levels.push(at(num(rule.trailR)))
   const lo = num(bar[L]), hi = num(bar[H])
   if (lo == null || hi == null) return { status: 'ok' }
   if (levels.some(p => p >= lo && p <= hi)) return { status: 'entry_bar_unresolved' }
+  // The since-entry Chandelier tightens from the peak. A favourable extreme
+  // beyond the fill inside the entry bar may have come after the fill (a
+  // tighter stop from the next bar on) or before it (none): replayExit seeds
+  // the peak from the next bar, so the stop it uses can be too loose. Unknown,
+  // so counted, not scored.
+  const chandelier = rule.chandelier && num(rule.chandelier.mult) > 0 && num(rule.chandelier.period) > 0
+  if (chandelier && (long ? hi > entry : lo < entry)) return { status: 'entry_bar_unresolved' }
   // Codex round 2 on #1394: an exit-at-the-mean rule fires on the bar CLOSE.
   // The entry bar's close is after the fill, but replayExit skips that bar, so
   // a close past the mean there would be a missed (certain) exit — counted
