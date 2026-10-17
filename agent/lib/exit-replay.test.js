@@ -350,6 +350,40 @@ test('#84: a cap expiring in a gap after the entry bar closes exits at the next 
   assert.equal(inside.ambiguous, true); assert.match(inside.reason, /entry bar/)
 })
 
+// Claude · № 15,451 17-Oct (#86, Codex round 4 on #1404; claude-builder): a
+// bar that OPENS through one level reached it first, even when the same bar
+// later touches the other level — order, not the dual-hit ambiguity.
+// Self-derived fixtures (expected exits follow from the open's position).
+test('#86: a bar opening through the stop that later reaches the target exits at the stop, not ambiguous', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 98.8, 101.7, 98.5, 101.6)]
+  const r = replayExit(bars, LONG)
+  assert.equal(r.ok, true); assert.equal(r.reason, 'stop'); assert.equal(r.rMultiple, -1)
+  const s = [bar(0, 100, 100.1, 99.7, 99.8), bar(60, 101.2, 101.4, 98.3, 98.4)]
+  const rs = replayExit(s, SHORT)
+  assert.equal(rs.reason, 'stop', 'short mirror'); assert.equal(rs.rMultiple, -1)
+})
+
+test('#86: a bar opening through the target that later reaches the stop exits at the target', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 101.7, 101.9, 98.9, 99.0)]
+  const r = replayExit(bars, LONG)
+  assert.equal(r.ok, true); assert.equal(r.reason, 'target'); assert.equal(r.rMultiple, 1.6)
+  const s = [bar(0, 100, 100.1, 99.7, 99.8), bar(60, 98.3, 101.1, 98.2, 100.9)]
+  assert.equal(replayExit(s, SHORT).reason, 'target', 'short mirror')
+})
+
+test('#86: a moved stop opened through is stop_moved even when the bar reaches the target', () => {
+  // Bar 1 peaks at +1.1R: break-even arms from bar 2. Bar 2 opens under 100.
+  const bars = [bar(0, 100, 101.1, 99.9, 101.0), bar(60, 99.95, 101.7, 99.8, 101.6)]
+  const r = replayExit(bars, LONG, { breakevenAtR: 1 })
+  assert.equal(r.reason, 'stop_moved'); assert.equal(r.rMultiple, 0)
+})
+
+test('#86: both levels touched with the open between them stays ambiguous', () => {
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.1, 101.7, 98.9, 100.5)]
+  const r = replayExit(bars, LONG)
+  assert.equal(r.ok, false); assert.equal(r.ambiguous, true); assert.match(r.reason, /both the stop and the target/)
+})
+
 // Codex round 2 on #1406: a bar ending exactly at the entry bounds a cap that
 // expires in a gap after it — the exit is the next open, not "inside the entry bar".
 test('#85: a cap expiring in a gap after a bar that ends exactly at the entry closes at the next open', () => {

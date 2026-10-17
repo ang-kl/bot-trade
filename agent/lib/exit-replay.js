@@ -257,6 +257,19 @@ export function replayExit(bars, trade, rule = {}) {
     const hitStop = long ? lo <= stop : hi >= stop
     const hitTp = tpFromRule != null && (long ? hi >= tpFromRule : lo <= tpFromRule)
 
+    // A bar that OPENS through the stop or the target reached that level
+    // first — that is order, not ambiguity (Codex round 1 on #1404), and it
+    // holds whether or not the same bar later reaches the other level too.
+    // Claude · № 15,451 17-Oct (#86, Codex round 4 on #1404; owner "Build #85
+    // and #86"; claude-builder): resolved BEFORE the dual-hit rule, which
+    // until now called a gap through the stop that later rallied to the
+    // target "unknowable". Priced at the level, as every stop exit here is.
+    const openB = num(b[O])
+    const openThroughStop = hitStop && openB != null && (long ? openB <= stop : openB >= stop)
+    const openThroughTp = hitTp && openB != null && (long ? openB >= tpFromRule : openB <= tpFromRule)
+    if (openThroughStop) return finish(stop, t, stop === sl0 ? 'stop' : 'stop_moved', used)
+    if (openThroughTp) return finish(tpFromRule, t, 'target', used)
+
     // THE CASE THIS MODULE EXISTS TO BE HONEST ABOUT.
     if (hitStop && hitTp) {
       return {
@@ -264,12 +277,7 @@ export function replayExit(bars, trade, rule = {}) {
         reason: 'one bar touched both the stop and the target — intrabar order is not recorded, so the outcome is unknowable',
       }
     }
-    // Codex round 1 on #1404: a bar that OPENS through the stop or the target
-    // reached it before the expiry inside it — that is order, not ambiguity.
-    const openB = num(b[O])
-    const openThroughStop = hitStop && openB != null && (long ? openB <= stop : openB >= stop)
-    const openThroughTp = hitTp && openB != null && (long ? openB >= tpFromRule : openB <= tpFromRule)
-    if (capInside && (hitStop || hitTp) && !openThroughStop && !openThroughTp) {
+    if (capInside && (hitStop || hitTp)) {
       return {
         ok: false, ambiguous: true, barsUsed: used,
         reason: 'the time cap expires inside a bar that also reaches the stop or the target — which came first is not recorded',
