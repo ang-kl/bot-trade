@@ -450,6 +450,16 @@ try {
   } catch (err) {
     console.error(`[boot] global strategy arm failed (non-fatal): ${err.message}`)
   }
+  // Claude · № 15,286 17-Oct (audit finding A): placed after the boot seeds (not between the
+  // pins and watchlist seeds, whose adjacency watchlists.test.js pins); from here on, every enable
+  // transition applies the same declared policy, not just the next boot.
+  try {
+    const { setAccountEnableHook } = await import('./services/account-enable-hook.js')
+    const { applyDeclaredStrategyPolicy } = await import('./services/declared-strategy-policy.js')
+    setAccountEnableHook((d, { reason }) => applyDeclaredStrategyPolicy(d, { reason }))
+  } catch (err) {
+    console.error(`[boot] account enable hook not registered (non-fatal): ${err.message}`)
+  }
   // One-time owner order 28-09-2026: after the registry and strategy seeds,
   // restore S/A/T before dispatch. A human master pause vetoes this order.
   try {

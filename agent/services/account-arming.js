@@ -45,6 +45,7 @@
 
 import { getState, setState, withPhaseWriteAuthority } from '../db.js'
 import { accountCapabilities } from './account-capabilities.js'
+import { runAccountEnableHook } from './account-enable-hook.js'
 
 /** The legacy per-account override key. Retired; read only by the migration. */
 export const legacyArmKey = (accountId) => `acct:${String(accountId)}:autotrade_enabled`
@@ -100,6 +101,8 @@ export function setAccountArmed(db, accountId, on, meta = {}) {
       return { ok: false, changed: false, from: null, to: 'manage_only', error: e.message }
     }
     noteArmChange(db, { accountId: id, from: 'unknown', to: 'manage_only', ...meta })
+    // Claude · № 15,286 17-Oct (audit finding A): the row was created enabled.
+    runAccountEnableHook(db, `disarm created ${id}`)
     return { ok: true, changed: true, from: 'unknown', to: 'manage_only' }
   }
 
@@ -119,6 +122,8 @@ export function setAccountArmed(db, accountId, on, meta = {}) {
   if (on && row.enabled !== 1) {
     db.prepare('UPDATE accounts SET enabled = 1, updated_at = ? WHERE account_id = ?')
       .run(new Date().toISOString(), id)
+    // Claude · № 15,286 17-Oct (audit finding A): re-enabled by an arm.
+    runAccountEnableHook(db, `arm ${id}`)
   }
   noteArmChange(db, { accountId: id, from, to, ...meta })
   return { ok: true, changed: true, from, to }
