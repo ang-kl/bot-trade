@@ -109,3 +109,30 @@ test('an exit-at-the-mean rule: a mid-bar fill whose entry-bar close is past the
   assert.equal(entryBarCoverage(b, trade, { exitAtMean: { period: 3 } }).status, 'entry_bar_unresolved', 'close 101 > SMA 99.67')
   assert.equal(entryBarCoverage(b, { ...trade, side: 'short', sl: 102, tp: 96 }, { exitAtMean: { period: 3 } }).status, 'ok', 'short: close above the SMA is no mean exit')
 })
+
+// Claude · № 15,268 17-Oct (Codex round 3 on #1394; owner: "Fix both, merge when green"). Self-derived fixtures.
+test('holdout (Codex round 3 P1): a TRAIN row is scored only on bars closed by the cutoff — a target reached on a later aftermath bar leaves it truncated in TRAIN, while the headline still counts it', () => {
+  const db = fresh()
+  for (let i = 0; i < 10; i++) {
+    if (i !== 6) { trade(db, { at: T0 + i * DAY }); continue }
+    const t = T0 + 6 * DAY
+    // Quiet until the cutoff (≈ day 6.3); the target 102 is reached only on a bar half a day later.
+    const quiet = [0, 1, 2, 3].map(k => [t + k * MIN, 100, 100.6, 99.6, 100.2, 0])
+    trade(db, { at: t, window: [...quiet, [t + 12 * 3_600_000, 100.2, 102.5, 100.1, 102.4, 0]] })
+  }
+  const r = exitCounterfactualExtended(db, { minSample: 3 })
+  assert.deepEqual(r.validation.rows, { train: 7, confirm: 3, straddling: 0 })
+  const headline = r.rules.find(x => x.rule === 'as_traded')
+  assert.equal(headline.usable, 10, 'the full window resolves all ten for the headline')
+  assert.equal(r.validation.train.as_traded.usable, 6, 'the day-6 row is still open at the cutoff, so TRAIN cannot score it')
+})
+
+test('entry bar (Codex round 3 P2): a mid-bar fill whose bar reaches the break-even or trail level is unresolved for that rule only', () => {
+  const t = 1_000 * MIN
+  const window = [[t, 100, 101.1, 99.5, 100.8, 0], [t + MIN, 100.8, 101, 100.5, 100.9, 0], [t + 2 * MIN, 100.9, 101, 100.6, 100.7, 0]]
+  const tr = { side: 'long', entry: 100, sl: 99, tp: 102, openedAtMs: t + 30_000 } // bar reaches +1R (101) but not 99 or 102
+  assert.equal(entryBarCoverage(window, tr, {}).status, 'ok')
+  assert.equal(entryBarCoverage(window, tr, { name: 'be_at_1R', breakevenAtR: 1 }).status, 'entry_bar_unresolved')
+  assert.equal(entryBarCoverage(window, tr, { name: 'trail_1R', trailR: 1 }).status, 'entry_bar_unresolved')
+  assert.equal(entryBarCoverage(window, tr, { name: 'be_at_2R', breakevenAtR: 1.5 }).status, 'ok', 'a level the bar does not reach stays resolved')
+})

@@ -414,7 +414,8 @@ export function barIntervalMs(bars) {
  * clipped: no stored bar spans the fill (`t <= openedAt < t + interval`).
  * entry_bar_unresolved: the fill is inside a bar (not at its open) and that
  * bar's range reaches a level the rule acts on — the stop, the target (the
- * rule's tpR or the trade's own), or the partial level.
+ * rule's tpR or the trade's own), the partial level, the break-even or
+ * trail activation level, or (exit at the mean) a close past the SMA.
  */
 export function entryBarCoverage(bars, trade, rule = {}) {
   const tuples = normaliseBars(bars)
@@ -438,6 +439,14 @@ export function entryBarCoverage(bars, trade, rule = {}) {
   if (rule.tpR != null && num(rule.tpR) != null) levels.push(at(num(rule.tpR)))
   else if (num(trade?.tp) != null) levels.push(num(trade.tp))
   if (num(rule.partialAtR) != null) levels.push(at(num(rule.partialAtR)))
+  // Codex round 3 on #1394: break-even and the R trail move the stop once the
+  // peak reaches their level. replayExit skips the entry bar, so a level the
+  // entry bar reaches would arm (or not) unseen — the outcome is unknown
+  // (a scratch or a full stop), so the row is counted, not scored. The
+  // since-entry Chandelier has no level (any peak tightens it); its missed
+  // first-bar peak only makes the stop late, the bias stated in the note.
+  if (num(rule.breakevenAtR) != null) levels.push(at(num(rule.breakevenAtR)))
+  if (num(rule.trailR) != null) levels.push(at(num(rule.trailR)))
   const lo = num(bar[L]), hi = num(bar[H])
   if (lo == null || hi == null) return { status: 'ok' }
   if (levels.some(p => p >= lo && p <= hi)) return { status: 'entry_bar_unresolved' }

@@ -29,7 +29,7 @@
 // well it reproduces the actual outcomes on the same trades.
 // ---------------------------------------------------------------------------
 import { replayablePopulation, MIN_SAMPLE } from './exit-counterfactual.js'
-import { replayExit, summariseReplay, favourableExcursion, DEFAULT_RULES, entryBarCoverage } from '../lib/exit-replay.js'
+import { replayExit, summariseReplay, favourableExcursion, DEFAULT_RULES, entryBarCoverage, barIntervalMs, normaliseBars, T as BAR_T } from '../lib/exit-replay.js'
 // Claude · № 15,258 17-Oct (research plan step 2 prerequisites, owner: "Build it, initial stop as the default,
 // merge when green"; claude-builder): the broker's asset class per symbol. This report runs on an isolated
 // worker whose module state is not primed at boot, so the cached tree is read here (read-only).
@@ -296,11 +296,22 @@ export function exitCounterfactualExtended(db, {
     const start = Math.min(...known), end = Math.max(...known), cutoff = start + frac * (end - start)
     const train = [], confirm = []; let straddling = 0
     eligible.forEach((_, i) => { if (closes[i] != null && closes[i] <= cutoff) train.push(i); else if (opens[i] != null && opens[i] >= cutoff) confirm.push(i); else straddling++ })
-    const block = idx => {
-      const common = idx.filter(i => results.every(r => r.out[i]?.ok))
-      return Object.fromEntries(results.map(({ rule, out }) => [rule.name, summariseReplay(common.map(i => out[i]))]))
+    // Codex round 3 on #1394 (P1): a TRAIN row's window holds aftermath bars
+    // that can run past the cutoff, so its full-window outcome may be decided
+    // by prices CONFIRM is meant to own. TRAIN is replayed on the bars that
+    // closed by the cutoff; a rule still holding there is truncated (not
+    // usable), never scored on later prices. CONFIRM keeps the full window.
+    const cutBars = bars => {
+      const tuples = normaliseBars(bars), tf = barIntervalMs(tuples) ?? 0
+      return tuples.filter(b => b[BAR_T] + tf <= cutoff)
     }
-    const tr = block(train), cf = block(confirm)
+    const trainOut = new Map(train.map(i => [i, results.map(({ rule }) => replayOne({ ...eligible[i], bars: cutBars(eligible[i].bars) }, rule))]))
+    const outAt = (r, i, own) => (own ? trainOut.get(i)[r] : results[r].out[i])
+    const block = (idx, own) => {
+      const common = idx.filter(i => results.every((_, r) => outAt(r, i, own)?.ok))
+      return Object.fromEntries(results.map(({ rule }, r) => [rule.name, summariseReplay(common.map(i => outAt(r, i, own)))]))
+    }
+    const tr = block(train, true), cf = block(confirm, false)
     const ranked = Object.entries(tr).filter(([, s]) => s.usable >= minSample && s.expectancyR != null).sort((a, b) => b[1].expectancyR - a[1].expectancyR)
     const selected = ranked.length ? ranked[0][0] : null
     const conf = selected ? cf[selected] : null
@@ -321,7 +332,7 @@ export function exitCounterfactualExtended(db, {
     extended: true,
     accountId: accountId == null ? null : String(accountId), days, cleanOnly, strategy, excludeStrategy, family, minSample,
     stop: { basis: stop === 'initial' ? 'broker_sl_initial (rows without it excluded, counted in coverage.no_initial_stop)' : 'sl_price (as recorded)' },
-    coverage: { ...coverage, entryBarUnresolvedByRule: Object.fromEntries(perRule.map(r => [r.rule, r.entryBarUnresolved])), rule: 'clipped: no stored bar spans the fill; entry_bar_unresolved: the fill is inside a bar whose range reaches a level the rule acts on (stop, target or partial). Both excluded from every figure. Trail rules start their peak from the next bar: a known late (never false) bias.' },
+    coverage: { ...coverage, entryBarUnresolvedByRule: Object.fromEntries(perRule.map(r => [r.rule, r.entryBarUnresolved])), rule: 'clipped: no stored bar spans the fill; entry_bar_unresolved: the fill is inside a bar whose range reaches a level the rule acts on (stop, target, partial, break-even or trail level, or a close past the mean). Both excluded from every figure. Trail rules start their peak from the next bar: a known late (never false) bias.' },
     validation,
     actualSource,
     sweeps: { ...cfg, source: research.source, overridden: sweeps.overridden },
