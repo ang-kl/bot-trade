@@ -303,5 +303,6 @@ test('#84: a refusal whose horizon ends inside a bar scores time_cap, or ambiguo
   const by = Object.fromEntries(db.prepare('SELECT * FROM refusal_scores').all().map(x => [x.symbol, x]))
   assert.equal(by.EURUSD.outcome, 'time_cap', 'RED before: truncated')
   assert.equal(by.EURUSD.r_reached, 0.4)
+  assert.equal(by.EURUSD.exit_at, iso(at + 48 * H), 'stamped at the horizon\'s expiry (Codex round 1 on #1404)')
   assert.equal(by.GBPUSD.outcome, 'ambiguous', 'the last bar reaches the target 1.31 and holds the expiry')
 })

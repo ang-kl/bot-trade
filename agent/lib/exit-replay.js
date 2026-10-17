@@ -251,7 +251,12 @@ export function replayExit(bars, trade, rule = {}) {
         reason: 'one bar touched both the stop and the target — intrabar order is not recorded, so the outcome is unknowable',
       }
     }
-    if (capInside && (hitStop || hitTp)) {
+    // Codex round 1 on #1404: a bar that OPENS through the stop or the target
+    // reached it before the expiry inside it — that is order, not ambiguity.
+    const openB = num(b[O])
+    const openThroughStop = hitStop && openB != null && (long ? openB <= stop : openB >= stop)
+    const openThroughTp = hitTp && openB != null && (long ? openB >= tpFromRule : openB <= tpFromRule)
+    if (capInside && (hitStop || hitTp) && !openThroughStop && !openThroughTp) {
       return {
         ok: false, ambiguous: true, barsUsed: used,
         reason: 'the time cap expires inside a bar that also reaches the stop or the target — which came first is not recorded',
@@ -267,21 +272,24 @@ export function replayExit(bars, trade, rule = {}) {
     const barPeakPrice = long ? hi : lo
     if (peakPrice == null || (long ? barPeakPrice > peakPrice : barPeakPrice < peakPrice)) peakPrice = barPeakPrice
 
-    if (capInside && partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR) {
+    const partialLevel = partialAtR != null ? (long ? entry + partialAtR * risk : entry - partialAtR * risk) : null
+    const openThroughPartial = partialLevel != null && openB != null && (long ? openB >= partialLevel : openB <= partialLevel)
+    if (capInside && partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR && !openThroughPartial) {
       return {
         ok: false, ambiguous: true, barsUsed: used,
         reason: 'the time cap expires inside a bar that also reaches the partial level — which came first is not recorded',
       }
     }
-    // The cap ends inside this bar and nothing it acts on was touched: closed
-    // at market, priced at this bar's close (at most one bar late).
-    if (capInside) return { ...finish(close, t, 'time_cap', used), capInsideBar: true }
     // A partial banked at its level, from THIS bar's close on (the level was
     // touched inside the bar; the stop was not, or we would have returned).
     if (partialAtR != null && partialFraction > 0 && !partial && peakR >= partialAtR) {
       partial = { r: partialAtR, fraction: partialFraction, atMs: t }
       if (partialFraction >= 1) return finish(long ? entry + partialAtR * risk : entry - partialAtR * risk, t, 'partial_full', used)
     }
+    // The cap ends inside this bar and nothing it acts on was touched after
+    // the open: closed at market at the expiry, priced at this bar's close
+    // (at most one bar late). Stamped at the expiry (Codex round 1 on #1404).
+    if (capInside) return { ...finish(close, expiry, 'time_cap', used), capInsideBar: true }
     // The exit at the mean: this bar's close crossed the SMA in the trade's favour.
     if (meanPeriod != null) {
       const sma = smaAt(tuples, i, meanPeriod)
@@ -309,7 +317,7 @@ export function replayExit(bars, trade, rule = {}) {
 
     // The cap ends exactly as this bar closes: everything in the bar came
     // before it, and the price at the expiry is this close.
-    if (expiry != null && tf != null && t != null && expiry === t + tf) return finish(close, t, 'time_cap', used)
+    if (expiry != null && tf != null && t != null && expiry === t + tf) return finish(close, expiry, 'time_cap', used)
     // One bar only, so no interval to place the expiry in: the bar-open rule
     // as before.
     if (expiry != null && tf == null && t != null && t - startMs >= capMs) return finish(close, t, 'time_cap', used)

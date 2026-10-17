@@ -259,7 +259,9 @@ test('the shipped rule set covers the audit question and names every rule', () =
 test('#84: a cap ending exactly at a bar close exits at THAT close, not the next bar\'s open', () => {
   const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(30, 100.3, 100.6, 100.25, 100.4)]
   const r = replayExit(bars, LONG, { timeCapMin: 30 })
-  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.2); assert.equal(r.exitAtMs, t0)
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.2)
+  // Stamped at the expiry, not the bar's open (Codex round 1 on #1404).
+  assert.equal(r.exitAtMs, t0 + 30 * MIN); assert.equal(r.heldMin, 30)
 })
 
 test('#84: a cap ending inside a bar that touches nothing exits at that bar\'s close, flagged', () => {
@@ -268,6 +270,7 @@ test('#84: a cap ending inside a bar that touches nothing exits at that bar\'s c
   const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 100.2, 100.5, 100.1, 100.4), bar(120, 100.4, 101.8, 100.3, 101.7)]
   const r = replayExit(bars, LONG, { timeCapMin: 90 })
   assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.4); assert.equal(r.capInsideBar, true)
+  assert.equal(r.heldMin, 90, 'stamped at the expiry (Codex round 1 on #1404)')
   assert.equal(replayExit(bars, LONG, {}).reason, 'target', 'without the cap the target is reached')
 })
 
@@ -299,4 +302,24 @@ test('#84: the short side mirrors the boundary exit', () => {
   const bars = [bar(0, 100, 100.1, 99.7, 99.8), bar(30, 99.8, 99.9, 99.5, 99.6)]
   const r = replayExit(bars, SHORT, { timeCapMin: 30 })
   assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 99.8); assert.equal(r.rMultiple, 0.2)
+})
+
+// Codex round 1 on #1404: a bar that OPENS through a level reached it before
+// the expiry inside it — order, not ambiguity. Self-derived fixtures.
+test('#84: the expiry bar opens through the stop → stop; through the target → target (not ambiguous)', () => {
+  const stp = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 98.8, 99.0, 98.5, 98.9), bar(120, 98.9, 99, 98.8, 98.9)]
+  const r1 = replayExit(stp, LONG, { timeCapMin: 90 })
+  assert.equal(r1.reason, 'stop'); assert.equal(r1.rMultiple, -1)
+  const tgt = [bar(0, 100, 100.3, 99.9, 100.2), bar(60, 101.7, 101.9, 101.5, 101.6), bar(120, 101.6, 101.7, 101.5, 101.6)]
+  assert.equal(replayExit(tgt, LONG, { timeCapMin: 90 }).reason, 'target')
+  const sShort = [bar(0, 100, 100.1, 99.7, 99.8), bar(60, 101.2, 101.4, 101, 101.3), bar(120, 101.3, 101.4, 101.2, 101.3)]
+  assert.equal(replayExit(sShort, SHORT, { timeCapMin: 90 }).reason, 'stop', 'short mirror')
+})
+
+test('#84: the expiry bar opens past the partial level → partial banked, then the cap closes the rest at the expiry', () => {
+  const bars = [bar(0, 100, 100.2, 99.9, 100.1), bar(60, 100.35, 100.5, 100.3, 100.4), bar(120, 100.4, 100.5, 100.3, 100.4)]
+  const r = replayExit(bars, LONG, { timeCapMin: 90, partialAtR: 0.3 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.capInsideBar, true)
+  assert.equal(r.partial.r, 0.3); assert.equal(r.runnerR, 0.4)
+  assert.equal(r.rMultiple, 0.35, 'half at +0.3R, half at the close +0.4R')
 })
