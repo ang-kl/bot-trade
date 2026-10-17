@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en-GB">
 <head>
+  <!-- Codex · № 15,095 §13 · 17-Oct-2026; documentation palette accessibility. -->
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Context Engineering Diagnostic & Reference v1.1 | ang-kl/bot-trade</title>
@@ -15,11 +16,11 @@
       --text-muted: #94a3b8;
       --border-color: #334155;
       --accent-blue: #38bdf8;
-      --accent-green: #34d399;
+      --accent-positive: #38bdf8;
       --accent-amber: #fbbf24;
       --accent-coral: #f87171;
       --accent-purple: #a78bfa;
-      --accent-teal: #2dd4bf;
+      --accent-secondary: #fbbf24;
       --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
       --code-bg: #090d16;
     }
@@ -34,11 +35,11 @@
       --text-muted: #64748b;
       --border-color: #cbd5e1;
       --accent-blue: #0284c7;
-      --accent-green: #059669;
+      --accent-positive: #0284c7;
       --accent-amber: #d97706;
       --accent-coral: #dc2626;
       --accent-purple: #7c3aed;
-      --accent-teal: #0d9488;
+      --accent-secondary: #d97706;
       --shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.08);
       --code-bg: #f1f5f9;
     }
@@ -97,11 +98,11 @@
     }
 
     .badge-blue { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
-    .badge-green { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
+    .badge-positive { background: rgba(56, 189, 248, 0.15); color: var(--accent-positive); border: 1px solid var(--accent-positive); }
     .badge-amber { background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
     .badge-coral { background: rgba(248, 113, 113, 0.15); color: var(--accent-coral); border: 1px solid var(--accent-coral); }
     .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); border: 1px solid var(--accent-purple); }
-    .badge-teal { background: rgba(45, 212, 191, 0.15); color: var(--accent-teal); border: 1px solid var(--accent-teal); }
+    .badge-secondary { background: rgba(251, 191, 36, 0.15); color: var(--accent-secondary); border: 1px solid var(--accent-secondary); }
 
     .provenance-line {
       margin-top: 0.4rem;
@@ -289,7 +290,7 @@
       cursor: pointer;
       transition: all 0.15s ease;
     }
-    .stack-item:hover, .stack-item.active { border-color: var(--accent-teal); background: rgba(45, 212, 191, 0.08); }
+    .stack-item:hover, .stack-item.active { border-color: var(--accent-secondary); background: rgba(251, 191, 36, 0.08); }
 
     .progress-bar-outer {
       width: 100%;
@@ -302,7 +303,7 @@
     }
     .progress-bar-inner {
       height: 100%;
-      background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+      background: linear-gradient(90deg, var(--accent-blue), var(--accent-positive));
       width: 0%;
       transition: width 0.3s ease;
     }
@@ -318,8 +319,8 @@
       background: var(--bg-primary);
       cursor: pointer;
     }
-    .check-item.checked { border-color: var(--accent-green); background: rgba(52, 211, 153, 0.06); }
-    .check-item input[type="checkbox"] { margin-top: 0.25rem; width: 1.05rem; height: 1.05rem; accent-color: var(--accent-green); }
+    .check-item.checked { border-color: var(--accent-positive); background: rgba(56, 189, 248, 0.06); }
+    .check-item input[type="checkbox"] { margin-top: 0.25rem; width: 1.05rem; height: 1.05rem; accent-color: var(--accent-positive); }
 
     .search-input {
       width: 100%;
@@ -379,7 +380,7 @@
           <h1>
             Context Engineering Diagnostic &amp; Reference
             <span class="badge badge-blue">ang-kl/bot-trade</span>
-            <span class="badge badge-green">v1.1 Standalone</span>
+            <span class="badge badge-positive">v1.1 Standalone</span>
           </h1>
           <div class="provenance-line">
             Provenance: Version 1.1 - 17 October 2026 | Source: Google Cloud Tech (<a href="http://www.youtube.com/watch?v=BBPQYtR7oUk" target="_blank" rel="noopener">youtu.be/BBPQYtR7oUk</a>) | Target: <a href="https://github.com/ang-kl/bot-trade/tree/main" target="_blank" rel="noopener">github.com/ang-kl/bot-trade</a>
@@ -438,13 +439,13 @@
         </p>
         <div class="grid-2" style="margin-bottom: 0;">
           <div class="stack-list" id="stackList">
-            <div class="stack-item active" onclick="selectStack(0)"><strong>1. Instructions (System Prompt &amp; Guardrails)</strong><span class="badge badge-teal">00:03:50</span></div>
-            <div class="stack-item" onclick="selectStack(1)"><strong>2. User Input (Current Turn Ask / Trigger)</strong><span class="badge badge-teal">00:03:58</span></div>
-            <div class="stack-item" onclick="selectStack(2)"><strong>3. Retrieved Facts (Selected High-Signal Snippets)</strong><span class="badge badge-teal">00:04:01</span></div>
-            <div class="stack-item" onclick="selectStack(3)"><strong>4. Tools (Permitted Function Definitions)</strong><span class="badge badge-teal">00:04:08</span></div>
-            <div class="stack-item" onclick="selectStack(4)"><strong>5. Short-Term Notes (Recent Step Summary)</strong><span class="badge badge-teal">00:04:17</span></div>
-            <div class="stack-item" onclick="selectStack(5)"><strong>6. Long-Term Memory (Stable Project/Strategy Facts)</strong><span class="badge badge-teal">00:04:26</span></div>
-            <div class="stack-item" onclick="selectStack(6)"><strong>7. Output Format (Strict Schema Lock)</strong><span class="badge badge-teal">00:04:35</span></div>
+            <div class="stack-item active" onclick="selectStack(0)"><strong>1. Instructions (System Prompt &amp; Guardrails)</strong><span class="badge badge-secondary">00:03:50</span></div>
+            <div class="stack-item" onclick="selectStack(1)"><strong>2. User Input (Current Turn Ask / Trigger)</strong><span class="badge badge-secondary">00:03:58</span></div>
+            <div class="stack-item" onclick="selectStack(2)"><strong>3. Retrieved Facts (Selected High-Signal Snippets)</strong><span class="badge badge-secondary">00:04:01</span></div>
+            <div class="stack-item" onclick="selectStack(3)"><strong>4. Tools (Permitted Function Definitions)</strong><span class="badge badge-secondary">00:04:08</span></div>
+            <div class="stack-item" onclick="selectStack(4)"><strong>5. Short-Term Notes (Recent Step Summary)</strong><span class="badge badge-secondary">00:04:17</span></div>
+            <div class="stack-item" onclick="selectStack(5)"><strong>6. Long-Term Memory (Stable Project/Strategy Facts)</strong><span class="badge badge-secondary">00:04:26</span></div>
+            <div class="stack-item" onclick="selectStack(6)"><strong>7. Output Format (Strict Schema Lock)</strong><span class="badge badge-secondary">00:04:35</span></div>
           </div>
           <div class="inspector-pane" id="stackDetail">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
@@ -453,7 +454,7 @@
             </div>
             <p style="margin-bottom:0.75rem;"><strong>Video Principle:</strong> Clear, plain language wins. Specify role, task boundaries, and fallback rules (e.g. 'Summarize incidents into one paragraph plus a severity score 0-4; only use provided context; if data is missing, ask for a file path').</p>
             <p style="margin-bottom:0.75rem;"><strong>Target Surface in <code>bot-trade</code>:</strong> <code>CLAUDE.md &amp; agent/services/ System Prompts</code></p>
-            <div style="background: rgba(52, 211, 153, 0.08); border-left: 3px solid var(--accent-green); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
+            <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid var(--accent-positive); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
               <strong>Diagnostic Upgrade:</strong> Keep static instructions short and behavioural. Strip essay-length explanations and remove hard-coded numeric thresholds (which belong in trade-guard.js) so instructions never clash with code.
             </div>
           </div>
@@ -464,7 +465,7 @@
     <!-- TAB 2: INTERACTIVE PIPELINE SIMULATOR -->
     <section id="tab-pipeline" class="tab-panel">
       <div class="card">
-        <h2>Write - Select - Compress - Isolate Pipeline Simulator <span class="badge badge-green">00:06:36</span></h2>
+        <h2>Write - Select - Compress - Isolate Pipeline Simulator <span class="badge badge-positive">00:06:36</span></h2>
         <p style="color: var(--text-secondary); margin-bottom: 1rem;">
           Step through the 6-node context assembly lifecycle before a model call. Toggle between the <strong>Engineered Context Stack</strong> and the <strong>Unengineered Monolithic Prompt</strong> to compare how payloads are constructed for <code>bot-trade</code>.
         </p>
@@ -517,13 +518,13 @@
         <div class="inspector-pane" id="pipelineInspector">
           <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
             <div>
-              <span class="badge badge-green" style="margin-bottom:0.4rem;">Step 1: Write [00:06:47]</span>
+              <span class="badge badge-positive" style="margin-bottom:0.4rem;">Step 1: Write [00:06:47]</span>
               <h3 style="margin:0; font-size:1.15rem;">External State &amp; Ledger (<code>reconciler.js / CLAUDE.md</code>)</h3>
             </div>
             <span class="badge badge-coral">Prevents: Poisoning [00:02:19]</span>
           </div>
           <p style="margin-bottom:0.85rem;"><strong>Core Purpose:</strong> Save verified facts, broker receipts, and plans outside the context window so the LLM never relies on its own prior prose as memory.</p>
-          <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: rgba(52, 211, 153, 0.08); border-left: 4px solid var(--accent-green);">
+          <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: rgba(56, 189, 248, 0.08); border-left: 4px solid var(--accent-positive);">
             <strong>Engineered Context Behaviour (Active):</strong> reconciler.js writes verified broker receipts to an external state store, and coding agents write state to the CLAUDE.md serial ledger. The context window starts clean every turn.
           </div>
           <div>
@@ -645,7 +646,7 @@
       <div class="card">
         <h2>
           <span>Interactive Prompt Audit Checklist for <code>bot-trade</code></span>
-          <span class="badge badge-green" id="checklistScoreBadge">0 / 10 Completed</span>
+          <span class="badge badge-positive" id="checklistScoreBadge">0 / 10 Completed</span>
         </h2>
         <p style="color: var(--text-secondary);">
           Use this persistent checklist (saved automatically in your browser's local storage) when reviewing <code>CLAUDE.md</code> and <code>agent/services/</code> prompts.
@@ -658,7 +659,7 @@
         <div style="display: flex; gap: 0.6rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
           <button class="btn btn-primary" type="button" onclick="copyChecklistMarkdown()">Copy Audit Report as Markdown</button>
           <button class="btn" type="button" onclick="resetChecklist()">Reset All Checkboxes</button>
-          <span id="copyStatus" style="font-size: 0.85rem; color: var(--accent-green); align-self: center;"></span>
+          <span id="copyStatus" style="font-size: 0.85rem; color: var(--accent-positive); align-self: center;"></span>
         </div>
 
         <div id="checklistContainer">
@@ -725,12 +726,12 @@
             <tbody>
               <tr>
                 <td><strong>Video Transcript Grounding</strong></td>
-                <td><span class="badge badge-green">Passed</span></td>
+                <td><span class="badge badge-positive">Passed</span></td>
                 <td>All 4 failure modes (Poisoning, Distraction, Confusion, Clash), the 7-part context stack, and the 4-step framework (Write, Select, Compress, Isolate) verified directly against transcript timestamps <code>[00:00:04 - 00:09:56]</code>.</td>
               </tr>
               <tr>
                 <td><strong>Standalone HTML &amp; JS Syntax Integrity</strong></td>
-                <td><span class="badge badge-green">Passed</span></td>
+                <td><span class="badge badge-positive">Passed</span></td>
                 <td>All strings single/double-quote sanitised, newline joins replaced with <code>String.fromCharCode(10)</code>, and static HTML fallbacks pre-rendered inside every tab panel.</td>
               </tr>
               <tr>
@@ -740,7 +741,7 @@
               </tr>
               <tr>
                 <td><strong>Production Safety &amp; Non-Execution</strong></td>
-                <td><span class="badge badge-green">Passed</span></td>
+                <td><span class="badge badge-positive">Passed</span></td>
                 <td>Read-only diagnostic and standalone HTML reference generation; no repository code, deployments, or environment variables were altered.</td>
               </tr>
             </tbody>
@@ -820,7 +821,7 @@
         title: "External State & Ledger",
         module: "reconciler.js / CLAUDE.md",
         prevents: "Poisoning [00:02:19]",
-        badgeClass: "badge-green",
+        badgeClass: "badge-positive",
         summary: "Save verified facts, broker receipts, and plans outside the context window so the LLM never relies on its own prior prose as memory.",
         unengineeredDesc: "Model relies on previous chat turns to remember open positions, recent fills, or which files were already audited. One hallucinated fill or false assumption poisons every subsequent turn.",
         engineeredDesc: "reconciler.js writes verified broker receipts to an external state store, and coding agents write state to the CLAUDE.md serial ledger. The context window starts clean every turn.",
@@ -872,7 +873,7 @@
         title: "Deterministic Scorer & Gate",
         module: "trade-guard.js + C++ Sidecar",
         prevents: "Clash [00:02:45]",
-        badgeClass: "badge-green",
+        badgeClass: "badge-positive",
         summary: "Enforce hard numeric invariants (expectancy floors, USD notional caps, refractory timers) in deterministic code rather than prose prompts.",
         unengineeredDesc: "System prompt says 'Max exposure is $50k' while trade-guard.js says '$25k', creating a silent Clash inside the context window.",
         engineeredDesc: "Deterministic C++ sidecar and trade-guard.js evaluate hard gates first and pass an authoritative, clash-free verdict to the scorer digest.",
@@ -1025,7 +1026,7 @@
       listEl.innerHTML = stackLayers.map((layer, idx) => `
         <div class="stack-item ${idx === currentStackIdx ? 'active' : ''}" onclick="selectStack(${idx})">
           <div><strong>${layer.num}. ${layer.name}</strong></div>
-          <span class="badge badge-teal">${layer.time}</span>
+          <span class="badge badge-secondary">${layer.time}</span>
         </div>
       `).join("");
 
@@ -1037,7 +1038,7 @@
         </div>
         <p style="margin-bottom:0.75rem;"><strong>Video Principle:</strong> ${active.videoRule}</p>
         <p style="margin-bottom:0.75rem;"><strong>Target Surface in <code>bot-trade</code>:</strong> <code>${active.botTradeTarget}</code></p>
-        <div style="background: rgba(52, 211, 153, 0.08); border-left: 3px solid var(--accent-green); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
+        <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid var(--accent-positive); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
           <strong>Diagnostic Upgrade:</strong> ${active.diagnosticFix}
         </div>
       `;
@@ -1078,7 +1079,7 @@
           <span class="badge badge-coral">Prevents: ${node.prevents}</span>
         </div>
         <p style="margin-bottom:0.85rem;"><strong>Core Purpose:</strong> ${node.summary}</p>
-        <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: ${isEng ? 'rgba(52, 211, 153, 0.08)' : 'rgba(248, 113, 113, 0.08)'}; border-left: 4px solid ${isEng ? 'var(--accent-green)' : 'var(--accent-coral)'};">
+        <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: ${isEng ? 'rgba(56, 189, 248, 0.08)' : 'rgba(248, 113, 113, 0.08)'}; border-left: 4px solid ${isEng ? 'var(--accent-positive)' : 'var(--accent-coral)'};">
           <strong>${isEng ? 'Engineered Context Behaviour (Active):' : 'Unengineered Failure Mode Symptom (Active):'}</strong>
           ${isEng ? node.engineeredDesc : node.unengineeredDesc}
         </div>
