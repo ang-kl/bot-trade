@@ -5645,7 +5645,9 @@ export default function actionsRouter(db, deps = {}) {
         Promise.all([
           import('../services/account-registry.js'),
           import('../services/account-capabilities.js'),
-        ]).then(([{ upsertAccount }, { enabledForMode, modeForPushedEntry }]) => {
+          import('../services/declared-strategy-policy.js'),
+        ]).then(([{ upsertAccount }, { enabledForMode, modeForPushedEntry }, { applyDeclaredStrategyPolicy }]) => {
+          let enabledAny = false
           try {
             for (const a of accounts) {
               if (a?.accountId == null) continue
@@ -5690,9 +5692,14 @@ export default function actionsRouter(db, deps = {}) {
               if (nextMode) {
                 db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
                   .run(enabledForMode(nextMode) ? 1 : 0, nextMode, new Date().toISOString(), String(a.accountId))
+                if (enabledForMode(nextMode)) enabledAny = true
               }
             }
           } catch (e) { console.warn('[actions/ctrader-config] registry mirror failed (non-fatal):', e.message) }
+          // Claude · № 15,286 17-Oct (audit finding A): a pushed list that leaves
+          // an account enabled applies the declared strategy policy now
+          // (seed-once, so accounts already seeded are untouched).
+          if (enabledAny) applyDeclaredStrategyPolicy(db, { reason: 'account list pushed' })
         }).catch(() => {})
 
         // Stale-position sweep, multi-account aware: rows belonging to ANY
