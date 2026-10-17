@@ -10,11 +10,11 @@ import { loadResearchConfig, withOverrides, numberList, RESEARCH_CONFIG_FILE } f
 test('the values are READ FROM THE FILE: a different file gives different values; a missing file gives empty sections, never defaults', () => {
   const dir = tempDir('research-config-')
   const file = join(dir, 'research.json')
-  writeFileSync(file, JSON.stringify({ exitReplay: { trailR: [0.25, 7], tpR: [4], followThroughR: [1.5], exitAtMeanPeriod: 50, maxDays: 30 },
+  writeFileSync(file, JSON.stringify({ exitReplay: { trailR: [0.25, 7], tpR: [4], followThroughR: [1.5], exitAtMeanPeriod: 50, maxDays: 30, validation: { trainFraction: 0.6 } },
     barForm: { timeBarsMs: [5000], tickBarsNominalMs: [120000], maxSilenceMs: 1000, pauseBetweenSegmentsMs: 0, maxSegmentsPerRun: 3, smallRun: { symbols: 1, days: 2 }, calibrationSegments: 2, computeWindowBars: 50, maxSymbolsPerRun: 3, designFloorMs: { rsi2_reversion: 3600000, 'bad key!': 1, ema_pullback: -5 } } }))
   const c = loadResearchConfig({ file })
   assert.equal(c.source, 'file')
-  assert.deepEqual(c.exitReplay, { trailR: [0.25, 7], tpR: [4], followThroughR: [1.5], exitAtMeanPeriod: 50, maxDays: 30 })
+  assert.deepEqual(c.exitReplay, { trailR: [0.25, 7], tpR: [4], followThroughR: [1.5], exitAtMeanPeriod: 50, maxDays: 30, validation: { trainFraction: 0.6 } })
   assert.deepEqual(c.barForm, { timeBarsMs: [5000], tickBarsNominalMs: [120000], maxSilenceMs: 1000, pauseBetweenSegmentsMs: 0, maxSegmentsPerRun: 3, smallRun: { symbols: 1, days: 2 }, calibrationSegments: 2, computeWindowBars: 50, maxSymbolsPerRun: 3, designFloorMs: { rsi2_reversion: 3600000 }, crossCheck: { closeTolerancePoints: null, ratioTolerance: null }, validation: { trainFraction: null, selectTop: null }, limits: { workerMemoryMb: null, maxRuntimeMs: null, maxTempBytes: null, maxCells: null, maxTransactionRows: null, maxPullsPerMinute: null, maxSkippedTicksDelta: null, maxBusyShare10m: null, maxReadingAgeMs: null, maxReadingAheadMs: null, pollMs: null } }, 'garbage floor entries dropped, never guessed; absent limits are null, never defaults')
   const none = loadResearchConfig({ file: join(dir, 'absent.json') })
   assert.equal(none.source, 'unavailable')
@@ -26,6 +26,8 @@ test('the checked-in file loads with every section present and every list non-em
   assert.equal(c.file, RESEARCH_CONFIG_FILE); assert.equal(c.source, 'file')
   for (const k of ['trailR', 'tpR', 'followThroughR']) assert.ok(c.exitReplay[k].length > 0, k)
   assert.ok(c.exitReplay.exitAtMeanPeriod > 0); assert.ok(c.exitReplay.maxDays > 0)
+  // Claude · № 15,258 17-Oct: the exit replay's holdout ships at 0.7 (research plan step 2).
+  assert.equal(c.exitReplay.validation.trainFraction, 0.7)
   for (const k of ['timeBarsMs', 'tickBarsNominalMs']) assert.ok(c.barForm[k].length > 0, k)
   assert.ok(c.barForm.timeBarsMs.includes(60000), 'the 1m baseline that mirrors the broker trendbar is present')
   assert.ok(c.barForm.maxSilenceMs > 0); assert.ok(c.barForm.pauseBetweenSegmentsMs >= 0); assert.ok(c.barForm.maxSegmentsPerRun > 0)

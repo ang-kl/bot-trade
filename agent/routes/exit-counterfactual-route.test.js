@@ -59,6 +59,17 @@ test('an extended option goes to the worker (no main-thread trades read), no-sto
   assert.equal(j.eligible, 3)
 })
 
+test('an extended request without ?stop replays against the broker\'s initial stop by default, and the new groupings are accepted (Claude · № 15,258 17-Oct)', async t => {
+  const { url } = await fixture(t)
+  for (const g of ['side', 'source', 'class']) {
+    const res = await fetch(url(`?minSample=1&groupBy=${g}`))
+    assert.equal(res.status, 200, g)
+    const j = await res.json()
+    assert.equal(j.extended, true); assert.match(j.stop.basis, /^broker_sl_initial/, `${g}: initial is the default basis`)
+    assert.equal(j.groups.by, g); assert.ok(j.validation && j.coverage, `${g}: validation and coverage reported`)
+  }
+})
+
 test('validation before any work: bad stop, preset, groupBy and family are 400 with a code', async t => {
   const { url } = await fixture(t)
   for (const [q, code] of [['?stop=trailed', 'exit_counterfactual_invalid_stop'], ['?preset=everything', 'exit_counterfactual_invalid_preset'], ['?groupBy=symbol', 'exit_counterfactual_invalid_group'], ['?family=Mean%20Reversion', 'exit_counterfactual_invalid_family']]) {
