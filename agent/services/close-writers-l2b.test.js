@@ -563,3 +563,22 @@ test('#85: the re-score pass closes a refusal made in the last bar before a clos
   assert.equal(r.outcome, 'time_cap', 'RED before: ambiguous — the refusal bar was dropped from the window')
   assert.equal(r.r_reached, 0.4)
 })
+
+// Codex round 2 on #1406 (P2), re-score side: the same exact-close refusal.
+test('#85: the re-score pass keeps the bar ending exactly at the refusal and closes at the reopen', async () => {
+  const db = fresh()
+  noBarsRow(db, { key: 'exact', firstMs: T0 + HOUR })   // expiry T0+49h; closure T0+1h .. T0+51h
+  const closedFetch = async (symbol, tf, count, endMs) => {
+    const bars = []
+    const last = Math.floor(endMs / HOUR) * HOUR
+    for (let t = last - (count - 1) * HOUR; t <= last; t += HOUR) {
+      if (t >= T0 + HOUR && t < T0 + 51 * HOUR) continue
+      bars.push(t === T0 + 51 * HOUR ? [t, 1.102, 1.1025, 1.1015, 1.102] : [t, 1.1, 1.101, 1.099, 1.1])
+    }
+    return decodeTrendbars(payload(bars))
+  }
+  await rescoreNoBarsRefusals(db, closedFetch, { nowMs: NOW, maxFetches: 1 })
+  const r = scoreOf(db, 'exact')
+  assert.equal(r.outcome, 'time_cap', 'RED before: ambiguous')
+  assert.equal(r.r_reached, 0.4)
+})

@@ -295,8 +295,9 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     const replayItem = (bs) => replayExit(bs, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs, barMs: tfMs }, { timeCapMin: it.horizonMin })
     // The bar holding the refusal stays in the window: replayExit skips it and
     // records its end, which tells an expiry in a closure after it from one
-    // inside it (#1404; Codex round 1 on #1406).
-    const inWindow = (b) => Number(b?.[0]) + tfMs > it.firstMs
+    // inside it (#1404; Codex rounds 1–2 on #1406: a bar ending exactly at the
+    // refusal is kept too — it is the previous interval boundary).
+    const inWindow = (b) => Number(b?.[0]) + tfMs >= it.firstMs
     let window = fetched.filter(inWindow)
     let r = replayItem(window)
     // #85: truncated, and the read's last bar closed at or before the expiry —
@@ -540,7 +541,7 @@ export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(),
         // scorer itself would.
         if (!isAnchor && !(Number.isFinite(firstBarMs) && firstBarMs <= it.firstMs)) continue
         const endMs = it.firstMs + it.horizonMin * 60_000
-        const window = bars.filter(b => Number(b?.[0]) + tfMs > it.firstMs && Number(b?.[0]) <= endMs)
+        const window = bars.filter(b => Number(b?.[0]) + tfMs >= it.firstMs && Number(b?.[0]) <= endMs)
         // #85: and the first bar after the expiry, for an expiry in a closed market.
         const after = bars.find(b => Number(b?.[0]) > endMs)
         if (after) window.push(after)

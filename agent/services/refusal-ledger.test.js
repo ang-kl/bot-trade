@@ -404,3 +404,20 @@ test('#85: a refusal in the last bar before a closure is read past the expiry, n
   assert.equal(row.r_reached, 0.4)
   assert.equal(calls.length, 2)
 })
+
+// Codex round 2 on #1406 (P2): a refusal stamped exactly at the close of the
+// market's last bar before a closure. That bar ends at the refusal; it is the
+// previous interval boundary and must stay in the window, or the replay reads
+// the expiry as "inside the entry bar".
+test('#85: a refusal exactly at the last pre-closure bar\'s close is read past the expiry and closes at the reopen', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + H85                               // the T0 bar closes at T0+1h; the closure starts there
+  refuse(db, { symbol: 'EURUSD', at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED before: ambiguous — the bar ending at the refusal was dropped')
+  assert.equal(row.r_reached, 0.4)
+  assert.equal(calls.length, 2)
+})

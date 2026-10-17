@@ -229,7 +229,10 @@ export function replayExit(bars, trade, rule = {}) {
     // The one holding a mid-bar fill still bounds where a cap expired: its end
     // tells an expiry inside it from one in a gap after it (Codex round 3 on #1404).
     if (startMs != null && t != null && t < startMs) {
-      if (tf != null && startMs < t + tf) prevEnd = t + tf
+      // Codex round 2 on #1406: a bar ending exactly at the entry is the
+      // previous interval boundary too (<=), so a cap in a gap after it closes
+      // at the next open instead of reading as inside the entry bar.
+      if (tf != null && startMs <= t + tf) prevEnd = t + tf
       continue
     }
     used++

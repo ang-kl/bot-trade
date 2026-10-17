@@ -349,3 +349,12 @@ test('#84: a cap expiring in a gap after the entry bar closes exits at the next 
   const inside = replayExit(bars, trade, { timeCapMin: 20 })
   assert.equal(inside.ambiguous, true); assert.match(inside.reason, /entry bar/)
 })
+
+// Codex round 2 on #1406: a bar ending exactly at the entry bounds a cap that
+// expires in a gap after it — the exit is the next open, not "inside the entry bar".
+test('#85: a cap expiring in a gap after a bar that ends exactly at the entry closes at the next open', () => {
+  const trade = { ...LONG, openedAtMs: t0 + 60 * MIN, barMs: 60 * MIN }
+  const bars = [bar(0, 100, 100.3, 99.9, 100.2), bar(360, 100.5, 100.6, 100.4, 100.5)]
+  const r = replayExit(bars, trade, { timeCapMin: 90 })
+  assert.equal(r.reason, 'time_cap'); assert.equal(r.exitPrice, 100.5)
+})
