@@ -388,3 +388,19 @@ test('#85: the read past the expiry stops at now — a market still shut leaves 
   assert.equal(row.outcome, 'truncated')
   assert.equal(calls[1].endMs, T0 + 49 * H85, 'never asks for bars after now')
 })
+
+// Codex round 1 on #1406 (P2): a refusal inside the market's last bar before a
+// closure — that bar opens before the refusal, so the post-entry window is
+// empty — still needs the read past the expiry; it used to record no_bars.
+test('#85: a refusal in the last bar before a closure is read past the expiry, not recorded no_bars', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + 30 * 60_000                       // inside the T0 bar; the closure starts at T0+1h
+  refuse(db, { symbol: 'EURUSD', at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED before: no_bars — the empty window skipped the second read')
+  assert.equal(row.r_reached, 0.4)
+  assert.equal(calls.length, 2)
+})

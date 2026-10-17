@@ -293,20 +293,27 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     let fetched = normaliseBars(bars) // V3 L2b W13: {t,o,h,l,c} → tuples
     const tfMs = tfMin * 60_000
     const replayItem = (bs) => replayExit(bs, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs, barMs: tfMs }, { timeCapMin: it.horizonMin })
-    let window = fetched.filter(b => Number(b?.[0]) >= it.firstMs)
+    // The bar holding the refusal stays in the window: replayExit skips it and
+    // records its end, which tells an expiry in a closure after it from one
+    // inside it (#1404; Codex round 1 on #1406).
+    const inWindow = (b) => Number(b?.[0]) + tfMs > it.firstMs
+    let window = fetched.filter(inWindow)
     let r = replayItem(window)
     // #85: truncated, and the read's last bar closed at or before the expiry —
     // the expiry fell in a closed market. ONE more read past it, merged by bar
     // time; only this case pays for it.
     let pastNote = null
     const lastT = fetched.length ? Number(fetched[fetched.length - 1]?.[0]) : NaN
-    if (!r.ok && !r.ambiguous && window.length && Number.isFinite(lastT) && lastT + tfMs <= endMs) {
+    // Codex round 1 on #1406: the guard reads what was FETCHED, not the post-entry
+    // window — a refusal inside the market's last bar before a closure has an
+    // empty window (that bar opens before firstMs) and still needs the read.
+    if (!r.ok && !r.ambiguous && fetched.length && Number.isFinite(lastT) && lastT + tfMs <= endMs) {
       const pastEnd = Math.min(nowMs, endMs + readPastExpiryMs(tfMs))
       if (pastEnd > endMs) {
         try {
           const more = normaliseBars(await fetchBars(it.symbol, tf, Math.min(400, Math.ceil((pastEnd - endMs) / tfMs) + 5), pastEnd))
           fetched = mergeBars(fetched, more)
-          window = fetched.filter(b => Number(b?.[0]) >= it.firstMs)
+          window = fetched.filter(inWindow)
           r = replayItem(window)
         } catch (err) {
           pastNote = `the read past the expiry failed: ${String(err?.message || err).slice(0, 150)}`
@@ -533,7 +540,7 @@ export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(),
         // scorer itself would.
         if (!isAnchor && !(Number.isFinite(firstBarMs) && firstBarMs <= it.firstMs)) continue
         const endMs = it.firstMs + it.horizonMin * 60_000
-        const window = bars.filter(b => Number(b?.[0]) >= it.firstMs && Number(b?.[0]) <= endMs)
+        const window = bars.filter(b => Number(b?.[0]) + tfMs > it.firstMs && Number(b?.[0]) <= endMs)
         // #85: and the first bar after the expiry, for an expiry in a closed market.
         const after = bars.find(b => Number(b?.[0]) > endMs)
         if (after) window.push(after)
