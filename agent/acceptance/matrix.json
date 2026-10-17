@@ -757,6 +757,14 @@
         {
           "file": "agent/services/reconciler.test.js",
           "title": "reclassify: no exit price yet — row left for a later pass"
+        },
+        {
+          "file": "agent/services/naked-guard-all-accounts.test.js",
+          "title": "a naked position on a NON-selected account gets the guardian stop, on that account only"
+        },
+        {
+          "file": "agent/services/naked-guard-all-accounts.test.js",
+          "title": "the guardian already in flight: the naked finding is deferred and said, never reported as guarded"
         }
       ]
     },

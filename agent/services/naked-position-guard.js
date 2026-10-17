@@ -1114,11 +1114,11 @@ export async function runProtectionAuditBothSides(db, baseCreds, deps = {}) {
     return run(db, c, deps)
   }))
   const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0,
-    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
+    targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [], blind: contexts.length === 0 }
   for (const result of results) {
     if (result.status === 'rejected') { out.errors.push(result.reason?.message || String(result.reason)); continue }
     const r = result.value
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred']) out[key] += r[key] || 0
     out.errors.push(...(r.errors || []))
     out.unauditable.push(...(r.unauditable || []))
     out.blind ||= !!r.blind
@@ -1165,7 +1165,7 @@ export async function runProtectionAuditAllAccounts(db, baseCreds, deps = {}) {
 }
 
 async function protectionAuditPass(db, baseCreds, deps, side) {
-  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [], blind: false }
+  const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [], blind: false }
   if (!baseCreds?.ready) return out
 
   const exec = deps.exec ?? await import('../lib/exec-engine.js')
@@ -1213,7 +1213,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   )
 
   const auditOne = async (id) => {
-    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, errors: [], unauditable: [] }
+    const out = { accounts: 0, naked: 0, targetless: 0, phantom: 0, tpDrift: 0, targetsRestored: 0, targetsSet: 0, stopsAdopted: 0, nakedStops: 0, nakedCloses: 0, nakedDeferred: 0, errors: [], unauditable: [] }
     try {
       const creds = id === primary ? baseCreds : { ...baseCreds, accountId: id }
       if (!creds?.ready) return out
@@ -1387,6 +1387,48 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
         // A failed repair must never take down the audit that found the fault.
         out.errors.push(`${id}: target restore failed — ${err?.message || err}`)
       }
+
+      // Claude · № 15,282 17-Oct (owner: "F-NEW-2 naked stop, all accounts";
+      // claude-builder). A NAKED FINDING GETS A HAND ON EVERY ACCOUNT.
+      //
+      // The Loss Guardian is what puts a stop on a position that has none, and
+      // the band runs it with the SELECTED account's credentials only, so its
+      // own SQL scopes it to that account. Live 42993489 ADAUSD #1944 sat
+      // with no broker stop from 16-10 21:19:50Z to 17-10 04:15Z while this
+      // audit printed "1 naked" every minute: the fact here, the hand there,
+      // and the two never met on a non-selected account.
+      //
+      // So the audit, which already holds THIS account's scoped credentials,
+      // runs the same guardian for this account when it finds a naked
+      // position: the same decision (stop maxAtrMult×ATR from entry, or close
+      // when price is already past it), the same per-account config, the same
+      // ratchet-only amend. loss-guardian.js is unchanged.
+      //
+      // The guardian's lock is one key for every account. If a pass is
+      // already in flight (the band's own, for the selected account) calling
+      // it would return THAT pass and guard nothing here, so the attempt is
+      // said and left to the next sweep rather than reported as done.
+      if (prot.naked.length) {
+        try {
+          const layers = deps.inFlightLayers ?? (await import('./acting-layer.js')).inFlightLayers
+          if (layers().includes('loss_guardian')) {
+            out.nakedDeferred += prot.naked.length
+            printOnChange(id, 'naked_guard_busy', `[protection] ${id}: ${prot.naked.length} naked — Loss Guardian busy with another pass; retried next sweep`, deps.nowMs ?? Date.now())
+          } else {
+            const { runLossGuardian } = deps.lossGuardian ?? await import('./loss-guardian.js')
+            const g = await runLossGuardian(db, creds, {
+              notify: sendMessage ? (m) => sendMessage(m).catch(() => {}) : undefined,
+              ...(deps.lossGuardianDeps || {}), // test seam: the broker boundary only
+            })
+            out.nakedStops += g?.stops || 0
+            out.nakedCloses += g?.closes || 0
+            for (const e of (g?.errors || [])) out.errors.push(`${id}: naked guard — ${e}`)
+            console.log(`[protection] ${id}: ${prot.naked.length} naked — Loss Guardian ran for this account: ${g?.stops || 0} stop(s), ${g?.closes || 0} close(s), ${(g?.deferred || []).length} deferred`)
+          }
+        } catch (err) {
+          out.errors.push(`${id}: naked guard failed — ${err?.message || err}`)
+        }
+      }
     } catch (err) {
       const msg = String(err?.message || err)
       // UNAUDITABLE IS NOT UNPROTECTED, and the difference decides whether
@@ -1461,7 +1503,7 @@ async function protectionAuditPass(db, baseCreds, deps, side) {
   }))
   for (let i = 0; i < results.length; i++) {
     const r = results[i]
-    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted']) out[key] += r[key] || 0
+    for (const key of ['accounts', 'naked', 'targetless', 'phantom', 'tpDrift', 'targetsRestored', 'targetsSet', 'stopsAdopted', 'nakedStops', 'nakedCloses', 'nakedDeferred']) out[key] += r[key] || 0
     out.errors.push(...r.errors)
     out.unauditable.push(...r.unauditable)
     if (r.accounts && obliged.has(ids[i])) reachedObliged++
