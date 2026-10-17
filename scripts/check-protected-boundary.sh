@@ -109,8 +109,17 @@ changed="$(git diff --name-only "$mb" -- "${PROTECTED[@]}")"
 # a differing path that is not named still fails. The marker DOCUMENTS the
 # authorisation — anyone can write the line — it does not prove who gave it;
 # the PR body and the conversation reference it carries are the record.
-authorised_src="${PROTECTED_AUTHORISED-}"
-if [[ -z "$authorised_src" ]]; then authorised_src="$(git log -1 --format=%B HEAD 2>/dev/null)"; fi
+# Claude · № 15,284 17-Oct (owner: "B: empty PR body", independent audit
+# finding B / Codex P1 on #1383; claude-builder). SET-BUT-EMPTY IS NOT UNSET.
+# CI always sets the variable — to the PR body, which may be empty — so an
+# empty body must authorise nothing; only a local run, where the variable is
+# not set at all, reads HEAD's commit message. The old `-z` test treated an
+# empty body as absent and fell through to the commit message.
+if [[ -n "${PROTECTED_AUTHORISED+set}" ]]; then
+  authorised_src="$PROTECTED_AUTHORISED"
+else
+  authorised_src="$(git log -1 --format=%B HEAD 2>/dev/null)"
+fi
 authorised="$(printf '%s\n' "$authorised_src" | sed -nE 's/^[[:space:]]*Protected-change-authorised:[[:space:]]*([^[:space:]()]+).*$/\1/p')"
 unauthorised=""; allowed=""
 while IFS= read -r p; do
