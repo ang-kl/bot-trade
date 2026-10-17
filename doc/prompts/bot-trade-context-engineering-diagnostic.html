@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <!-- Codex · № 15,095 §13 · 17-Oct-2026; documentation palette accessibility. -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Context Engineering Diagnostic & Reference v1.1 | ang-kl/bot-trade</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #334155;
+      --bg-card: #1e293b;
+      --text-primary: #f8fafc;
+      --text-secondary: #cbd5e1;
+      --text-muted: #94a3b8;
+      --border-color: #334155;
+      --accent-blue: #38bdf8;
+      --accent-positive: #38bdf8;
+      --accent-amber: #fbbf24;
+      --accent-coral: #f87171;
+      --accent-purple: #a78bfa;
+      --accent-secondary: #fbbf24;
+      --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+      --code-bg: #090d16;
+    }
+
+    [data-theme="light"] {
+      --bg-primary: #f8fafc;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #e2e8f0;
+      --bg-card: #ffffff;
+      --text-primary: #0f172a;
+      --text-secondary: #334155;
+      --text-muted: #64748b;
+      --border-color: #cbd5e1;
+      --accent-blue: #0284c7;
+      --accent-positive: #0284c7;
+      --accent-amber: #d97706;
+      --accent-coral: #dc2626;
+      --accent-purple: #7c3aed;
+      --accent-secondary: #d97706;
+      --shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.08);
+      --code-bg: #f1f5f9;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding-bottom: 4rem;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    a { color: var(--accent-blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
+
+    header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1.5rem 0 1rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow);
+    }
+
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .title-group h1 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      font-size: 0.74rem;
+      font-weight: 600;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      display: inline-block;
+    }
+
+    .badge-blue { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
+    .badge-positive { background: rgba(56, 189, 248, 0.15); color: var(--accent-positive); border: 1px solid var(--accent-positive); }
+    .badge-amber { background: rgba(251, 191, 36, 0.15); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
+    .badge-coral { background: rgba(248, 113, 113, 0.15); color: var(--accent-coral); border: 1px solid var(--accent-coral); }
+    .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); border: 1px solid var(--accent-purple); }
+    .badge-secondary { background: rgba(251, 191, 36, 0.15); color: var(--accent-secondary); border: 1px solid var(--accent-secondary); }
+
+    .provenance-line {
+      margin-top: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .header-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+    .btn {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+      padding: 0.45rem 0.85rem;
+      border-radius: 0.5rem;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .btn:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+    .btn-primary { background: var(--accent-blue); color: #0f172a; border-color: var(--accent-blue); }
+    .btn-primary:hover { opacity: 0.9; color: #0f172a; }
+
+    .nav-tabs {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 1rem;
+      overflow-x: auto;
+      padding-bottom: 0.25rem;
+    }
+
+    .tab-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid transparent;
+      padding: 0.45rem 0.9rem;
+      border-radius: 0.5rem;
+      font-size: 0.86rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+
+    .tab-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+    .tab-btn.active { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border-color: var(--accent-blue); }
+
+    main { margin-top: 1.75rem; }
+
+    /* Progressive Enhancement: visible if JS is disabled, tabbed when JS is active */
+    body.js-ready .tab-panel { display: none; }
+    body.js-ready .tab-panel.active { display: block; animation: fadeIn 0.2s ease; }
+    .tab-panel { display: block; margin-bottom: 2rem; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 0.75rem;
+      padding: 1.4rem;
+      margin-bottom: 1.4rem;
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      font-size: 1.2rem;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .card h3 { font-size: 1.02rem; margin-bottom: 0.45rem; color: var(--accent-blue); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+      gap: 1.2rem;
+      margin-bottom: 1.4rem;
+    }
+
+    .tldr-box {
+      border-left: 4px solid var(--accent-blue);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 1rem 1.25rem;
+      border-radius: 0 0.6rem 0.6rem 0;
+      margin-bottom: 1.4rem;
+    }
+
+    .sim-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      background: var(--bg-primary);
+      padding: 0.9rem;
+      border-radius: 0.6rem;
+      border: 1px solid var(--border-color);
+      margin-bottom: 1.2rem;
+    }
+
+    .pipeline-track {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0.6rem;
+      margin-bottom: 1.25rem;
+    }
+
+    @media (max-width: 900px) { .pipeline-track { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 550px) { .pipeline-track { grid-template-columns: 1fr; } }
+
+    .node-card {
+      background: var(--bg-primary);
+      border: 2px solid var(--border-color);
+      border-radius: 0.6rem;
+      padding: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .node-card:hover { border-color: var(--accent-blue); transform: translateY(-2px); }
+    .node-card.active { border-color: var(--accent-blue); background: rgba(56, 189, 248, 0.1); }
+    .node-card.unengineered-active { border-color: var(--accent-coral); background: rgba(248, 113, 113, 0.1); }
+
+    .node-step { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--accent-blue); display: block; margin-bottom: 0.2rem; }
+    .node-title { font-size: 0.88rem; font-weight: 700; margin-bottom: 0.25rem; }
+    .node-module { font-size: 0.74rem; color: var(--text-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .inspector-pane {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 0.65rem;
+      padding: 1.2rem;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      padding: 0.9rem;
+      border-radius: 0.5rem;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: var(--text-primary);
+      margin-top: 0.5rem;
+      white-space: pre-wrap;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: rgba(148, 163, 184, 0.15);
+      padding: 0.12rem 0.35rem;
+      border-radius: 0.25rem;
+      font-size: 0.86em;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 0.5rem; }
+    th, td { border: 1px solid var(--border-color); padding: 0.8rem 0.95rem; text-align: left; vertical-align: top; }
+    th { background: var(--bg-tertiary); font-weight: 700; color: var(--text-primary); }
+    tr:nth-child(even) td { background: rgba(148, 163, 184, 0.04); }
+
+    .stack-list { display: flex; flex-direction: column; gap: 0.45rem; }
+    .stack-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.7rem 0.95rem;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .stack-item:hover, .stack-item.active { border-color: var(--accent-secondary); background: rgba(251, 191, 36, 0.08); }
+
+    .progress-bar-outer {
+      width: 100%;
+      height: 12px;
+      background: var(--bg-primary);
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid var(--border-color);
+      margin: 0.7rem 0 1.1rem;
+    }
+    .progress-bar-inner {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-blue), var(--accent-positive));
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .check-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.8rem;
+      padding: 0.85rem;
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      margin-bottom: 0.6rem;
+      background: var(--bg-primary);
+      cursor: pointer;
+    }
+    .check-item.checked { border-color: var(--accent-positive); background: rgba(56, 189, 248, 0.06); }
+    .check-item input[type="checkbox"] { margin-top: 0.25rem; width: 1.05rem; height: 1.05rem; accent-color: var(--accent-positive); }
+
+    .search-input {
+      width: 100%;
+      padding: 0.7rem 0.95rem;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      color: var(--text-primary);
+      font-size: 0.92rem;
+      margin-bottom: 0.9rem;
+    }
+
+    .transcript-list {
+      max-height: 580px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 0.5rem;
+      background: var(--bg-primary);
+      padding: 0.4rem;
+    }
+    .transcript-row {
+      display: flex;
+      gap: 0.9rem;
+      padding: 0.5rem 0.7rem;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      font-size: 0.88rem;
+    }
+    .ts-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.76rem;
+      padding: 0.12rem 0.45rem;
+      border-radius: 0.35rem;
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      white-space: nowrap;
+      height: fit-content;
+    }
+
+    ul.clean-list { padding-left: 1.2rem; margin-top: 0.35rem; }
+    ul.clean-list li { margin-bottom: 0.35rem; }
+
+    @media print {
+      header { position: static; box-shadow: none; }
+      .header-actions, .nav-tabs, .sim-controls { display: none; }
+      body.js-ready .tab-panel { display: block !important; page-break-after: always; }
+      .transcript-list { max-height: none; overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="container">
+      <div class="header-top">
+        <div class="title-group">
+          <h1>
+            Context Engineering Diagnostic &amp; Reference
+            <span class="badge badge-blue">ang-kl/bot-trade</span>
+            <span class="badge badge-positive">v1.1 Standalone</span>
+          </h1>
+          <div class="provenance-line">
+            Provenance: Version 1.1 - 17 October 2026 | Source: Google Cloud Tech (<a href="http://www.youtube.com/watch?v=BBPQYtR7oUk" target="_blank" rel="noopener">youtu.be/BBPQYtR7oUk</a>) | Target: <a href="https://github.com/ang-kl/bot-trade/tree/main" target="_blank" rel="noopener">github.com/ang-kl/bot-trade</a>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="btn" type="button" onclick="toggleTheme()">Light / Dark</button>
+          <button class="btn" type="button" onclick="downloadSelfHtml()">Download .html</button>
+          <button class="btn btn-primary" type="button" onclick="window.print()">Print / Save PDF</button>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" aria-label="Diagnostic Sections">
+        <button class="tab-btn active" type="button" onclick="switchTab('overview', this)">1. Overview &amp; 7-Part Stack</button>
+        <button class="tab-btn" type="button" onclick="switchTab('pipeline', this)">2. Interactive Pipeline Simulator</button>
+        <button class="tab-btn" type="button" onclick="switchTab('failures', this)">3. Four Failure Modes Audit</button>
+        <button class="tab-btn" type="button" onclick="switchTab('checklist', this)">4. Interactive Prompt Checklist</button>
+        <button class="tab-btn" type="button" onclick="switchTab('transcript', this)">5. Full Video Transcript</button>
+        <button class="tab-btn" type="button" onclick="switchTab('invariants', this)">6. Provenance &amp; Invariants</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- TAB 1: OVERVIEW & 7-PART STACK -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="tldr-box">
+        <strong>Executive Summary:</strong> Fixing poor or inconsistent AI agent outputs requires <strong>context engineering</strong> rather than padding prompts like an essay. By treating the context window as scarce working memory, <code>bot-trade</code> can curate high-signal tokens dynamically across seven context layers, prevent the four context failure modes (<strong>Poisoning, Distraction, Confusion, Clash</strong>), and enforce the four-step curation cycle (<strong>Write, Select, Compress, Isolate</strong>) across both coding-agent governance (<code>CLAUDE.md</code>) and runtime trading services (<code>agent/services/</code>).
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Prompt Engineering vs Context Engineering <span class="badge badge-amber">00:03:00</span></h2>
+          <ul class="clean-list">
+            <li><strong>Prompt Engineering:</strong> How you word and structure instructions, examples, and constraints inside a static text block. Necessary, but insufficient when conversation and tool outputs snowball across turns.</li>
+            <li><strong>Context Engineering:</strong> How you dynamically assemble everything the model sees at runtime right before every model call - the exact tools, retrieved facts, short-term state deltas, and output schemas needed for the immediate step.</li>
+            <li><strong>The Scarce Working Memory Principle [00:01:41]:</strong> Larger context windows do not guarantee higher accuracy. Filling the window introduces stale text, irrelevant noise, and silent contradictions between sources.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>Dual-Surface Application in <code>bot-trade</code></h2>
+          <ul class="clean-list">
+            <li><strong>Surface A - Coding &amp; Review Governance (<code>CLAUDE.md</code> &amp; Codex PR Reviews):</strong> Governs Plan-Loop CI/CD state machines, Order-Storm Refractory Gating specs, owner grounding rules, and serial ledger write-backs.</li>
+            <li><strong>Surface B - Runtime Trading Services (<code>agent/services/</code>):</strong> Operates alongside deterministic modules (<code>reconciler.js</code>, <code>trade-guard.js</code>, <code>profit-keeper.js</code>, and C++ sidecar latches) to evaluate market context, hybrid 2R triggers, and operational boundaries.</li>
+            <li><strong>Core Rule:</strong> Never ask an LLM to remember or calculate what deterministic code in <code>reconciler.js</code> or <code>trade-guard.js</code> can verify and inject as a compact fact.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Interactive 7-Part Context Stack Inspector <span class="badge badge-purple">00:03:47</span></h2>
+        <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+          Click any of the seven context stack layers below to inspect how the video's <code>LogLook</code> triage agent maps directly onto <code>ang-kl/bot-trade</code>.
+        </p>
+        <div class="grid-2" style="margin-bottom: 0;">
+          <div class="stack-list" id="stackList">
+            <div class="stack-item active" onclick="selectStack(0)"><strong>1. Instructions (System Prompt &amp; Guardrails)</strong><span class="badge badge-secondary">00:03:50</span></div>
+            <div class="stack-item" onclick="selectStack(1)"><strong>2. User Input (Current Turn Ask / Trigger)</strong><span class="badge badge-secondary">00:03:58</span></div>
+            <div class="stack-item" onclick="selectStack(2)"><strong>3. Retrieved Facts (Selected High-Signal Snippets)</strong><span class="badge badge-secondary">00:04:01</span></div>
+            <div class="stack-item" onclick="selectStack(3)"><strong>4. Tools (Permitted Function Definitions)</strong><span class="badge badge-secondary">00:04:08</span></div>
+            <div class="stack-item" onclick="selectStack(4)"><strong>5. Short-Term Notes (Recent Step Summary)</strong><span class="badge badge-secondary">00:04:17</span></div>
+            <div class="stack-item" onclick="selectStack(5)"><strong>6. Long-Term Memory (Stable Project/Strategy Facts)</strong><span class="badge badge-secondary">00:04:26</span></div>
+            <div class="stack-item" onclick="selectStack(6)"><strong>7. Output Format (Strict Schema Lock)</strong><span class="badge badge-secondary">00:04:35</span></div>
+          </div>
+          <div class="inspector-pane" id="stackDetail">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+              <h3 style="margin:0;">Layer 1: Instructions (System Prompt &amp; Guardrails)</h3>
+              <span class="badge badge-amber">Timestamp 00:03:50</span>
+            </div>
+            <p style="margin-bottom:0.75rem;"><strong>Video Principle:</strong> Clear, plain language wins. Specify role, task boundaries, and fallback rules (e.g. 'Summarize incidents into one paragraph plus a severity score 0-4; only use provided context; if data is missing, ask for a file path').</p>
+            <p style="margin-bottom:0.75rem;"><strong>Target Surface in <code>bot-trade</code>:</strong> <code>CLAUDE.md &amp; agent/services/ System Prompts</code></p>
+            <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid var(--accent-positive); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
+              <strong>Diagnostic Upgrade:</strong> Keep static instructions short and behavioural. Strip essay-length explanations and remove hard-coded numeric thresholds (which belong in trade-guard.js) so instructions never clash with code.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: INTERACTIVE PIPELINE SIMULATOR -->
+    <section id="tab-pipeline" class="tab-panel">
+      <div class="card">
+        <h2>Write - Select - Compress - Isolate Pipeline Simulator <span class="badge badge-positive">00:06:36</span></h2>
+        <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+          Step through the 6-node context assembly lifecycle before a model call. Toggle between the <strong>Engineered Context Stack</strong> and the <strong>Unengineered Monolithic Prompt</strong> to compare how payloads are constructed for <code>bot-trade</code>.
+        </p>
+
+        <div class="sim-controls">
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button class="btn btn-primary" type="button" id="btnEngineered" onclick="setSimMode('engineered')">Engineered Context Stack (Recommended)</button>
+            <button class="btn" type="button" id="btnUnengineered" onclick="setSimMode('unengineered')">Unengineered Monolithic Prompt (Failure Modes Active)</button>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn" type="button" onclick="stepPipeline(-1)">Prev Stage</button>
+            <span id="stepIndicator" style="font-size: 0.85rem; font-weight: 700; padding: 0 0.5rem;">Stage 1 / 6</span>
+            <button class="btn" type="button" onclick="stepPipeline(1)">Next Stage</button>
+          </div>
+        </div>
+
+        <div class="pipeline-track" id="pipelineTrack">
+          <div class="node-card active" onclick="selectPipelineNode(0)">
+            <span class="node-step">Step 1: Write [00:06:47]</span>
+            <div class="node-title">External State &amp; Ledger</div>
+            <div class="node-module">reconciler.js / CLAUDE.md</div>
+          </div>
+          <div class="node-card" onclick="selectPipelineNode(1)">
+            <span class="node-step">Step 2: Select [00:07:30]</span>
+            <div class="node-title">High-Signal Gate Selection</div>
+            <div class="node-module">trade-guard.js / profit-keeper.js</div>
+          </div>
+          <div class="node-card" onclick="selectPipelineNode(2)">
+            <span class="node-step">Step 3: Compress [00:08:05]</span>
+            <div class="node-title">Loss-Aware History Condenser</div>
+            <div class="node-module">Rolling Session Summariser</div>
+          </div>
+          <div class="node-card" onclick="selectPipelineNode(3)">
+            <span class="node-step">Step 4a: Isolate [00:08:39]</span>
+            <div class="node-title">Reader Sub-Agent</div>
+            <div class="node-module">Market &amp; Log Feature Extractor</div>
+          </div>
+          <div class="node-card" onclick="selectPipelineNode(4)">
+            <span class="node-step">Step 4b: Isolate [00:09:05]</span>
+            <div class="node-title">Deterministic Scorer &amp; Gate</div>
+            <div class="node-module">trade-guard.js + C++ Sidecar</div>
+          </div>
+          <div class="node-card" onclick="selectPipelineNode(5)">
+            <span class="node-step">Step 4c: Isolate [00:09:08]</span>
+            <div class="node-title">Writer / Action Synthesiser</div>
+            <div class="node-module">Schema-Locked JSON Output</div>
+          </div>
+        </div>
+
+        <div class="inspector-pane" id="pipelineInspector">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+            <div>
+              <span class="badge badge-positive" style="margin-bottom:0.4rem;">Step 1: Write [00:06:47]</span>
+              <h3 style="margin:0; font-size:1.15rem;">External State &amp; Ledger (<code>reconciler.js / CLAUDE.md</code>)</h3>
+            </div>
+            <span class="badge badge-coral">Prevents: Poisoning [00:02:19]</span>
+          </div>
+          <p style="margin-bottom:0.85rem;"><strong>Core Purpose:</strong> Save verified facts, broker receipts, and plans outside the context window so the LLM never relies on its own prior prose as memory.</p>
+          <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: rgba(56, 189, 248, 0.08); border-left: 4px solid var(--accent-positive);">
+            <strong>Engineered Context Behaviour (Active):</strong> reconciler.js writes verified broker receipts to an external state store, and coding agents write state to the CLAUDE.md serial ledger. The context window starts clean every turn.
+          </div>
+          <div>
+            <strong style="font-size:0.85rem; color:var(--text-muted); text-transform:uppercase;">Engineered Runtime Context Payload:</strong>
+            <pre>{
+  "ledger_serial": 1343,
+  "verified_by": "reconciler.js",
+  "broker_receipt_id": "ORD-99281-VERIFIED",
+  "open_positions": [{ "symbol": "EURUSD", "net_usd_notional": 25000, "r_multiple": 1.42 }]
+}</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Summary Mapping Table: <code>LogLook</code> vs <code>bot-trade</code></h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Curation Step</th>
+                <th>Video Example (<code>LogLook</code> Triage Agent)</th>
+                <th><code>bot-trade</code> Architectural Upgrade</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>1. Write</strong><br><span class="badge badge-amber">00:06:47</span></td>
+                <td>Persist plans, checked files, and intermediate findings outside the context window in <code>investigation_steps.md</code>.</td>
+                <td>Persist coding-agent state via the <code>CLAUDE.md</code> serial ledger write-back protocol, and persist runtime trade/fill truth in <code>reconciler.js</code> state stores. Never use chat history as a state database.</td>
+              </tr>
+              <tr>
+                <td><strong>2. Select</strong><br><span class="badge badge-amber">00:07:30</span></td>
+                <td>Pull only the last hour's <code>ERROR</code>/<code>CRITICAL</code> log lines, known false-positive list, and the severity scoring section of the runbook.</td>
+                <td>Inject only active refractory-gate status from <code>trade-guard.js</code>, hybrid 2R state from <code>profit-keeper.js</code>, and anomalous market regime slices. Load sub-specifications in <code>CLAUDE.md</code> on demand.</td>
+              </tr>
+              <tr>
+                <td><strong>3. Compress</strong><br><span class="badge badge-amber">00:08:05</span></td>
+                <td>Keep the last 5 raw findings for safety; roll older turns into a 3-line loss-aware recap in a fresh window.</td>
+                <td>Cap raw trade/audit history at the last 5 events; summarise prior session activity into a 3-line digest (active regime, exposure latch status, last verified broker reconciliation timestamp).</td>
+              </tr>
+              <tr>
+                <td><strong>4. Isolate</strong><br><span class="badge badge-amber">00:08:39</span></td>
+                <td>Sandbox into 3 sub-agents: <strong>Reader</strong> (extracts facts), <strong>Scorer</strong> (applies policy), and <strong>Writer</strong> (drafts JSON summary).</td>
+                <td>Split runtime and review flows into: (a) <strong>Feature Reader</strong> (parses logs/bars), (b) <strong>Deterministic Scorer</strong> (<code>trade-guard.js</code> + C++ sidecar enforcing hard numeric gates), and (c) <strong>Action Writer</strong> (emits schema-locked JSON).</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: FOUR FAILURE MODES AUDIT -->
+    <section id="tab-failures" class="tab-panel">
+      <div class="card">
+        <h2>Diagnostic Matrix: The Four Context Failure Modes <span class="badge badge-coral">00:02:19 - 00:02:53</span></h2>
+        <p style="color: var(--text-secondary);">
+          In multi-turn agents, accuracy drops when the context window fills with snowballed tool outputs and prior turns. Use these four failure modes to diagnose weaknesses in your prompt templates.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>1. Poisoning <span class="badge badge-coral">00:02:19</span></h2>
+          <p><strong>Video Definition:</strong> A hallucinated or erroneous fact enters the context window and gets reused repeatedly across subsequent turns.</p>
+          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 0.85rem 0;">
+          <h3>Risk in <code>bot-trade</code></h3>
+          <p>If a runtime service in <code>agent/services/</code> retains an earlier LLM inference about order fill status, margin availability, or trend regime in its rolling chat history, subsequent bars treat that unverified guess as broker truth. In coding workflows, an unverified assumption that a test or invariant passed gets repeated across turns.</p>
+          <h3 style="margin-top: 0.75rem;">Prompt Diagnostic &amp; Fix</h3>
+          <ul class="clean-list">
+            <li>Strip all self-referential prose history regarding positions, fills, and balances.</li>
+            <li>Inject fresh, deterministic state strictly from <code>reconciler.js</code> broker receipts and C++ sidecar latches on every call.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>2. Distraction <span class="badge badge-amber">00:02:36</span></h2>
+          <p><strong>Video Definition:</strong> The model fixates on a massive history or essay-length prompt instead of formulating a fresh plan for the current step.</p>
+          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 0.85rem 0;">
+          <h3>Risk in <code>bot-trade</code></h3>
+          <p>Passing hundreds of raw historical OHLCV bars, verbose execution logs, or entire multi-file PR histories dilutes attention away from the immediate decision boundary (such as hybrid 2R triggers or refractory cooldown gates).</p>
+          <h3 style="margin-top: 0.75rem;">Prompt Diagnostic &amp; Fix</h3>
+          <ul class="clean-list">
+            <li>Audit the token ratio of static instructions + historical logs versus current-turn state data.</li>
+            <li>Apply <strong>Compress</strong>: keep at most the last 5 raw events and condense older history into a 3-line loss-aware state recap.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>3. Confusion <span class="badge badge-purple">00:02:36</span></h2>
+          <p><strong>Video Definition:</strong> Extra, unrelated details or tool schemas in the context window nudge the model toward an incorrect answer.</p>
+          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 0.85rem 0;">
+          <h3>Risk in <code>bot-trade</code></h3>
+          <p>Mixing exploratory research instructions (bar-form research jobs or strategy brainstorming) with live execution guardrails (<code>trade-guard.js</code> and <code>profit-keeper.js</code>), or exposing MCP/API tool descriptions that are illegal in the current state-machine phase.</p>
+          <h3 style="margin-top: 0.75rem;">Prompt Diagnostic &amp; Fix</h3>
+          <ul class="clean-list">
+            <li>Apply <strong>Isolate</strong>: separate your Reader, Scorer, and Writer prompts into distinct calls.</li>
+            <li>Dynamically filter the <code>tools</code> array so the model only sees functions permitted in its current state-machine phase.</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>4. Clash <span class="badge badge-blue">00:02:45</span></h2>
+          <p><strong>Video Definition:</strong> Two sources of truth inside the context window silently disagree, and the model picks the wrong one.</p>
+          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 0.85rem 0;">
+          <h3>Risk in <code>bot-trade</code></h3>
+          <p>Hard-coding numeric thresholds (USD notional exposure caps, mathematical expectancy floors, or order-storm refractory timers) inside prose prompts (<code>CLAUDE.md</code> or runtime prompt strings) while also encoding them in <code>trade-guard.js</code> or C++ sidecars. When code parameters change, prose prompts lag behind and create a silent clash.</p>
+          <h3 style="margin-top: 0.75rem;">Prompt Diagnostic &amp; Fix</h3>
+          <ul class="clean-list">
+            <li>Remove duplicated numeric thresholds from prose system prompts.</li>
+            <li>Have <code>trade-guard.js</code> and <code>profit-keeper.js</code> compute the exact boolean/numeric gate state and pass that single authoritative object into Retrieved Facts.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: INTERACTIVE CHECKLIST -->
+    <section id="tab-checklist" class="tab-panel">
+      <div class="card">
+        <h2>
+          <span>Interactive Prompt Audit Checklist for <code>bot-trade</code></span>
+          <span class="badge badge-positive" id="checklistScoreBadge">0 / 10 Completed</span>
+        </h2>
+        <p style="color: var(--text-secondary);">
+          Use this persistent checklist (saved automatically in your browser's local storage) when reviewing <code>CLAUDE.md</code> and <code>agent/services/</code> prompts.
+        </p>
+
+        <div class="progress-bar-outer">
+          <div class="progress-bar-inner" id="checklistProgress"></div>
+        </div>
+
+        <div style="display: flex; gap: 0.6rem; margin-bottom: 1.25rem; flex-wrap: wrap;">
+          <button class="btn btn-primary" type="button" onclick="copyChecklistMarkdown()">Copy Audit Report as Markdown</button>
+          <button class="btn" type="button" onclick="resetChecklist()">Reset All Checkboxes</button>
+          <span id="copyStatus" style="font-size: 0.85rem; color: var(--accent-positive); align-self: center;"></span>
+        </div>
+
+        <div id="checklistContainer">
+          <label class="check-item" for="chk-1"><input type="checkbox" id="chk-1" onchange="toggleCheck('chk-1', this.checked)"><div><span class="badge badge-blue">Write &amp; State Grounding</span> <strong>1. Eliminate chat-history position memory in agent/services/</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Verify that no runtime prompt infers open positions, fill status, or PnL from prior LLM assistant messages; inject fresh state exclusively from reconciler.js.</div></div></label>
+          <label class="check-item" for="chk-2"><input type="checkbox" id="chk-2" onchange="toggleCheck('chk-2', this.checked)"><div><span class="badge badge-blue">Write &amp; State Grounding</span> <strong>2. Enforce external scratchpad / serial ledger write-backs in CLAUDE.md</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Ensure multi-step coding or research plans are written to external state files (like investigation_steps.md or your serial ledger) rather than accumulated inside the prompt window.</div></div></label>
+          <label class="check-item" for="chk-3"><input type="checkbox" id="chk-3" onchange="toggleCheck('chk-3', this.checked)"><div><span class="badge badge-blue">Clash Prevention</span> <strong>3. Remove duplicated numeric thresholds from prose system prompts</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Audit CLAUDE.md and runtime prompt strings for hard-coded numbers (USD notional caps, expectancy floors, refractory timers) that duplicate trade-guard.js or C++ sidecar constants.</div></div></label>
+          <label class="check-item" for="chk-4"><input type="checkbox" id="chk-4" onchange="toggleCheck('chk-4', this.checked)"><div><span class="badge badge-blue">Select &amp; Filter</span> <strong>4. Pass pre-computed gate objects instead of raw histories</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Feed the LLM compact boolean/numeric gate outputs from trade-guard.js and profit-keeper.js rather than raw historical bar arrays or verbose log dumps.</div></div></label>
+          <label class="check-item" for="chk-5"><input type="checkbox" id="chk-5" onchange="toggleCheck('chk-5', this.checked)"><div><span class="badge badge-blue">Select &amp; Filter</span> <strong>5. Include explicit known-false-positive / noise rules</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Following the video's LogLook pattern [00:06:00], pass a compact list of known benign alerts or market noise patterns so the agent does not over-trigger.</div></div></label>
+          <label class="check-item" for="chk-6"><input type="checkbox" id="chk-6" onchange="toggleCheck('chk-6', this.checked)"><div><span class="badge badge-blue">Compress</span> <strong>6. Cap raw event history at the last 5 items + 3-line loss-aware recap</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Replace unbounded multi-turn message arrays with a rolling 3-line session summary plus at most the last 5 raw verified events [00:08:25].</div></div></label>
+          <label class="check-item" for="chk-7"><input type="checkbox" id="chk-7" onchange="toggleCheck('chk-7', this.checked)"><div><span class="badge badge-blue">Isolate &amp; Tool Gating</span> <strong>7. Filter tool definitions dynamically by state-machine phase</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Strip unused MCP or execution tool schemas from the context stack when the agent is in a read-only, research, or refractory-cooldown state [00:04:13].</div></div></label>
+          <label class="check-item" for="chk-8"><input type="checkbox" id="chk-8" onchange="toggleCheck('chk-8', this.checked)"><div><span class="badge badge-blue">Isolate &amp; Sub-Agents</span> <strong>8. Separate Reader, Scorer, and Writer responsibilities</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Ensure raw log/market feature extraction (Reader) is isolated from policy scoring (trade-guard.js / Scorer) and final digest generation (Writer) [00:09:00].</div></div></label>
+          <label class="check-item" for="chk-9"><input type="checkbox" id="chk-9" onchange="toggleCheck('chk-9', this.checked)"><div><span class="badge badge-blue">Instructions &amp; Guardrails</span> <strong>9. Add explicit missing-data fallback instructions</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Instruct the agent: 'Only use provided context; if required reconciliation or file data is missing, halt and request the exact file path or state key' [00:05:25].</div></div></label>
+          <label class="check-item" for="chk-10"><input type="checkbox" id="chk-10" onchange="toggleCheck('chk-10', this.checked)"><div><span class="badge badge-blue">Output Format</span> <strong>10. Lock all runtime agent responses to a strict JSON schema</strong><div style="font-size:0.88rem; color:var(--text-secondary);">Enforce structured JSON input and output schemas [00:06:20] with deterministic schema validation before any downstream service consumes the response.</div></div></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: FULL VIDEO TRANSCRIPT -->
+    <section id="tab-transcript" class="tab-panel">
+      <div class="card">
+        <h2>
+          <span>Searchable Video Transcript</span>
+          <span class="badge badge-amber">Google Cloud Tech (10:05)</span>
+        </h2>
+        <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+          Full transcript of <em>"Context engineering explained: What every AI developer should know"</em> (<a href="http://www.youtube.com/watch?v=BBPQYtR7oUk" target="_blank" rel="noopener">watch on YouTube</a>). Filter by keyword (e.g., <code>poisoning</code>, <code>compress</code>, <code>tools</code>, <code>JSON</code>).
+        </p>
+
+        <input type="text" id="transcriptSearch" class="search-input" placeholder="Search transcript lines or timestamps..." oninput="filterTranscript()">
+
+        <div class="transcript-list" id="transcriptContainer">
+          <div class="transcript-row"><a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=4s" target="_blank" rel="noopener">[00:00:04]</a><div>most people try to fix bad AI answers by writing bigger prompts that's a wrong move if you have been</div></div>
+          <div class="transcript-row"><a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=47s" target="_blank" rel="noopener">[00:00:47]</a><div>engineering is the craft of deciding exactly what the model should see and what it shouldn't at each step it</div></div>
+          <div class="transcript-row"><a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=139s" target="_blank" rel="noopener">[00:02:19]</a><div>four common failure modes in the wild first off we have poisoning where a hallucinated fact gets into context and</div></div>
+          <div class="transcript-row"><a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=227s" target="_blank" rel="noopener">[00:03:47]</a><div>are seven pieces involved first we have instructions which are the system prompt and guardrails clear and plain language wins</div></div>
+          <div class="transcript-row"><a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=396s" target="_blank" rel="noopener">[00:06:36]</a><div>across the best agent systems and they're really simple to remember write select compress and isolate first we have write</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 6: PROVENANCE & INVARIANTS -->
+    <section id="tab-invariants" class="tab-panel">
+      <div class="card">
+        <h2>Provenance, Tool Disclosure &amp; Verification Boundaries</h2>
+        <ul class="clean-list">
+          <li><strong>Document Provenance:</strong> Version 1.1 - Generated 17 October 2026 (Asia/Singapore).</li>
+          <li><strong>Changelog in v1.1:</strong> Fixed two JavaScript syntax errors from v1.0 (unescaped quotes at transcript lines <code>00:04:57-00:05:05</code> and a broken multi-line string literal inside <code>copyChecklistMarkdown()</code>) and pre-rendered initial DOM states for offline/QuickLook compatibility.</li>
+          <li><strong>Primary Video Source:</strong> Google Cloud Tech, <em>"Context engineering explained: What every AI developer should know"</em>, published 15 July 2026, URL: <a href="http://www.youtube.com/watch?v=BBPQYtR7oUk" target="_blank" rel="noopener">http://www.youtube.com/watch?v=BBPQYtR7oUk</a>.</li>
+          <li><strong>Target Repository:</strong> <a href="https://github.com/ang-kl/bot-trade/tree/main" target="_blank" rel="noopener">https://github.com/ang-kl/bot-trade/tree/main</a>.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Invariants Status Table</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Invariant Name</th>
+                <th>Status</th>
+                <th>Evidence &amp; Verification Boundary</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Video Transcript Grounding</strong></td>
+                <td><span class="badge badge-positive">Passed</span></td>
+                <td>All 4 failure modes (Poisoning, Distraction, Confusion, Clash), the 7-part context stack, and the 4-step framework (Write, Select, Compress, Isolate) verified directly against transcript timestamps <code>[00:00:04 - 00:09:56]</code>.</td>
+              </tr>
+              <tr>
+                <td><strong>Standalone HTML &amp; JS Syntax Integrity</strong></td>
+                <td><span class="badge badge-positive">Passed</span></td>
+                <td>All strings single/double-quote sanitised, newline joins replaced with <code>String.fromCharCode(10)</code>, and static HTML fallbacks pre-rendered inside every tab panel.</td>
+              </tr>
+              <tr>
+                <td><strong>Live GitHub Source File Inspection</strong></td>
+                <td><span class="badge badge-amber">Not Verifiable</span></td>
+                <td>GitHub's web shell returned an empty <code>&lt;main&gt;&lt;/main&gt;</code> container during static HTTP fetch. Structural modules are verified via workspace records; verbatim line audit awaits pasted source text.</td>
+              </tr>
+              <tr>
+                <td><strong>Production Safety &amp; Non-Execution</strong></td>
+                <td><span class="badge badge-positive">Passed</span></td>
+                <td>Read-only diagnostic and standalone HTML reference generation; no repository code, deployments, or environment variables were altered.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    document.body.classList.add("js-ready");
+
+    const stackLayers = [
+      {
+        num: "1",
+        name: "Instructions (System Prompt & Guardrails)",
+        time: "00:03:50",
+        videoRule: "Clear, plain language wins. Specify role, task boundaries, and fallback rules (e.g. 'Summarize incidents into one paragraph plus a severity score 0-4; only use provided context; if data is missing, ask for a file path').",
+        botTradeTarget: "CLAUDE.md & agent/services/ System Prompts",
+        diagnosticFix: "Keep static instructions short and behavioural. Strip essay-length explanations and remove hard-coded numeric thresholds (which belong in trade-guard.js) so instructions never clash with code."
+      },
+      {
+        num: "2",
+        name: "User Input (Current Turn Ask / Trigger)",
+        time: "00:03:58",
+        videoRule: "The specific, immediate request or event trigger for the current turn.",
+        botTradeTarget: "Bar Close Event / Reconciliation Trigger / PR Review Command",
+        diagnosticFix: "Frame each runtime invocation around a single discrete event (e.g. 'Evaluate Bar Close Event #8492 under active gate constraints') rather than an open-ended chat prompt."
+      },
+      {
+        num: "3",
+        name: "Retrieved Facts (Selected High-Signal Snippets)",
+        time: "00:04:01",
+        videoRule: "Only the few snippets that matter right now: last hour's ERROR/CRITICAL log slice, known false-positive list, and the specific severity scoring policy section.",
+        botTradeTarget: "reconciler.js + trade-guard.js + profit-keeper.js",
+        diagnosticFix: "Inject verified broker receipts from reconciler.js, refractory gate booleans from trade-guard.js, and hybrid 2R trigger status from profit-keeper.js. Do not dump full historical OHLCV tables."
+      },
+      {
+        num: "4",
+        name: "Tools (Permitted Function Definitions)",
+        time: "00:04:08",
+        videoRule: "Functions the model can call plus their descriptions, which consume working memory inside the context window.",
+        botTradeTarget: "MCP Servers / Broker API Wrappers / Code Inspection Tools",
+        diagnosticFix: "Only attach tool schemas that are valid in the current state-machine phase. If trade-guard.js has latched a refractory cooldown, do not even expose order-placement tool definitions to the model."
+      },
+      {
+        num: "5",
+        name: "Short-Term Notes (Recent Step Summary)",
+        time: "00:04:17",
+        videoRule: "Compact notes summarizing what was already checked and what changed recently (last 5 raw items + 3-line loss-aware recap).",
+        botTradeTarget: "Rolling Session Digest / Plan-Loop CI/CD State",
+        diagnosticFix: "Replace full multi-turn chat transcripts with a structured 3-line state digest + the last 5 raw audit events to prevent Distraction and Poisoning."
+      },
+      {
+        num: "6",
+        name: "Long-Term Memory (Stable Project/Strategy Facts)",
+        time: "00:04:26",
+        videoRule: "Stable facts about the user or project pulled on demand from outside the context window (e.g. investigation_steps.md).",
+        botTradeTarget: "CLAUDE.md Serial Ledger & Strategy Regime Profiles",
+        diagnosticFix: "Store durable architectural invariants and serial ledger write-backs in external files and query only the relevant section on demand."
+      },
+      {
+        num: "7",
+        name: "Output Format (Strict Schema Lock)",
+        time: "00:04:35",
+        videoRule: "JSON schemas or structured examples that lock the exact shape of the model's answer.",
+        botTradeTarget: "Runtime Action Schema & Invariants Report Contract",
+        diagnosticFix: "Enforce strict JSON schema validation on all agent/services/ LLM outputs (e.g. { action, confidence, gate_verified, rationale_digest }) and reject free-text prose in runtime pipelines."
+      }
+    ];
+
+    const pipelineNodes = [
+      {
+        id: 0,
+        step: "Step 1: Write [00:06:47]",
+        title: "External State & Ledger",
+        module: "reconciler.js / CLAUDE.md",
+        prevents: "Poisoning [00:02:19]",
+        badgeClass: "badge-positive",
+        summary: "Save verified facts, broker receipts, and plans outside the context window so the LLM never relies on its own prior prose as memory.",
+        unengineeredDesc: "Model relies on previous chat turns to remember open positions, recent fills, or which files were already audited. One hallucinated fill or false assumption poisons every subsequent turn.",
+        engineeredDesc: "reconciler.js writes verified broker receipts to an external state store, and coding agents write state to the CLAUDE.md serial ledger. The context window starts clean every turn.",
+        unengineeredPayload: "// ANTI-PATTERN: Appending raw chat turns as memory\nmessages.push({\n  role: 'assistant',\n  content: 'I believe the previous EURUSD order filled at 1.0850 and our exposure cap looks fine.'\n});",
+        engineeredPayload: "// ENGINEERED: External deterministic state file / ledger (outside prompt)\n{\n  \"ledger_serial\": 1343,\n  \"verified_by\": \"reconciler.js\",\n  \"broker_receipt_id\": \"ORD-99281-VERIFIED\",\n  \"open_positions\": [{ \"symbol\": \"EURUSD\", \"net_usd_notional\": 25000, \"r_multiple\": 1.42 }]\n}"
+      },
+      {
+        id: 1,
+        step: "Step 2: Select [00:07:30]",
+        title: "High-Signal Gate Selection",
+        module: "trade-guard.js / profit-keeper.js",
+        prevents: "Distraction [00:02:36]",
+        badgeClass: "badge-blue",
+        summary: "Pull only the exact state slice and policy lines required for the current decision rather than hoarding raw historical data.",
+        unengineeredDesc: "Dumps 500 historical OHLCV bars, full raw broker logs, and the entire monolithic strategy manual into every prompt call.",
+        engineeredDesc: "Selects only anomalous bar features, the active refractory cooldown status from trade-guard.js, and the hybrid 2R trigger state from profit-keeper.js.",
+        unengineeredPayload: "// ANTI-PATTERN: Dumping 500 raw bars + full log files\n\"Here are the last 500 1-minute bars: [1.0841, 1.0842, ... 498 more items ...]. Here is the entire 4,000-word trading manual. Tell me what to do.\"",
+        engineeredPayload: "// ENGINEERED: Curated high-signal facts only\n{\n  \"selected_regime_slice\": { \"volatility_zscore\": 2.4, \"bar_form\": \"impulse_breakout\" },\n  \"trade_guard_status\": { \"refractory_gate_open\": true, \"cooldown_remaining_ms\": 0, \"directional_lock\": \"LONG_ONLY\" },\n  \"profit_keeper_status\": { \"hybrid_2r_triggered\": false, \"current_r\": 1.42 }\n}"
+      },
+      {
+        id: 2,
+        step: "Step 3: Compress [00:08:05]",
+        title: "Loss-Aware History Condenser",
+        module: "Rolling Session Summariser",
+        prevents: "Distraction & Snowballing [00:08:05]",
+        badgeClass: "badge-blue",
+        summary: "Keep only the last 5 raw events for immediate safety and roll everything older into a tight 3-line recap in a fresh window.",
+        unengineeredDesc: "Drags a 40-turn conversation and tool-output history across the entire trading session until token accuracy degrades.",
+        engineeredDesc: "Retains the last 5 raw execution/audit events verbatim and compresses all older session history into a 3-line loss-aware digest.",
+        unengineeredPayload: "// ANTI-PATTERN: Unbounded 40-turn message array\nmessages = [...allFortyPreviousTurnsAndToolOutputs]; // 38,000 tokens of stale noise",
+        engineeredPayload: "// ENGINEERED: 3-line recap + last 5 raw events\n{\n  \"session_recap_3_lines\": [\n    \"1. Session regime shifted to high-volatility USD strength at 04:00 UTC; 2 winning trades closed (+3.1R).\",\n    \"2. One order-storm spike was blocked by C++ sidecar refractory latch at 05:15 UTC; zero unverified fills.\",\n    \"3. Current drawdown is 0.0%; USD notional exposure is at 25% of cap.\"\n  ],\n  \"recent_raw_events_max_5\": [ /* last 5 verified events */ ]\n}"
+      },
+      {
+        id: 3,
+        step: "Step 4a: Isolate [00:08:39]",
+        title: "Reader Sub-Agent",
+        module: "Market & Log Feature Extractor",
+        prevents: "Confusion [00:02:36]",
+        badgeClass: "badge-amber",
+        summary: "Sandbox raw data extraction into a dedicated Reader phase with zero execution tools so noisy logs cannot trigger accidental trades.",
+        unengineeredDesc: "Single agent reads noisy logs, evaluates risk policy, and holds live order-execution tools in the same prompt call.",
+        engineeredDesc: "Reader sub-agent receives only the selected log/market slice and extracts structured facts. It has zero order-execution tools attached.",
+        unengineeredPayload: "// ANTI-PATTERN: All-in-one prompt with all tools exposed\ntools: [read_logs, run_backtest, place_live_market_order, cancel_all_orders, modify_env_vars]",
+        engineeredPayload: "// ENGINEERED: Isolated Reader Sub-Agent Context\n{\n  \"role\": \"reader_sub_agent\",\n  \"instructions\": \"Extract structured anomaly facts from the provided log slice. Only use provided context.\",\n  \"tools\": [\"read_log_slice\", \"get_known_false_positives\"],\n  \"output_schema\": \"ReaderFactDigestV1\"\n}"
+      },
+      {
+        id: 4,
+        step: "Step 4b: Isolate [00:09:05]",
+        title: "Deterministic Scorer & Gate",
+        module: "trade-guard.js + C++ Sidecar",
+        prevents: "Clash [00:02:45]",
+        badgeClass: "badge-positive",
+        summary: "Enforce hard numeric invariants (expectancy floors, USD notional caps, refractory timers) in deterministic code rather than prose prompts.",
+        unengineeredDesc: "System prompt says 'Max exposure is $50k' while trade-guard.js says '$25k', creating a silent Clash inside the context window.",
+        engineeredDesc: "Deterministic C++ sidecar and trade-guard.js evaluate hard gates first and pass an authoritative, clash-free verdict to the scorer digest.",
+        unengineeredPayload: "// ANTI-PATTERN: Prose threshold clashing with code threshold\nSystem Prompt: \"Never exceed $50,000 notional exposure or 3 orders per minute.\"\nCode (trade-guard.js): const MAX_NOTIONAL_USD = 25000; const REFRACTORY_MS = 60000;",
+        engineeredPayload: "// ENGINEERED: Single authoritative gate verdict from code\n{\n  \"deterministic_gate_verdict\": \"PASS\",\n  \"enforced_by\": \"trade-guard.js + cpp_sidecar_v2\",\n  \"checks\": {\n    \"expectancy_floor_passed\": true,\n    \"idempotency_key_unique\": true,\n    \"notional_cap_headroom_usd\": 25000\n  }\n}"
+      },
+      {
+        id: 5,
+        step: "Step 4c: Isolate [00:09:08]",
+        title: "Writer / Action Synthesiser",
+        module: "Schema-Locked JSON Output",
+        prevents: "Schema Drift & Hallucination [00:04:39]",
+        badgeClass: "badge-purple",
+        summary: "Compose the final trade decision or PR audit summary strictly from the Reader and Scorer digests using a locked JSON schema.",
+        unengineeredDesc: "Returns free-text paragraphs that downstream parsers must regex-match, risking misparsed trade actions.",
+        engineeredDesc: "Writer sub-agent receives only the clean Reader + Scorer digests and emits a strict JSON payload matching the contract schema.",
+        unengineeredPayload: "// ANTI-PATTERN: Free-form conversational output\n\"Based on the logs, things look mostly okay, so I suggest we hold the position and maybe trail the stop soon.\"",
+        engineeredPayload: "// ENGINEERED: Strict JSON Output Format [00:06:20]\n{\n  \"schema_version\": \"1.0\",\n  \"decision\": \"HOLD_AND_TRAIL_2R\",\n  \"severity_score\": 1,\n  \"gate_receipt\": \"ORD-99281-VERIFIED\",\n  \"summary\": \"Broker state reconciled via reconciler.js; hybrid 2R threshold approaching with refractory gate clear.\"\n}"
+      }
+    ];
+
+    const checklistItems = [
+      { id: "chk-1", category: "Write & State Grounding", title: "Eliminate chat-history position memory in agent/services/", desc: "Verify that no runtime prompt infers open positions, fill status, or PnL from prior LLM assistant messages; inject fresh state exclusively from reconciler.js." },
+      { id: "chk-2", category: "Write & State Grounding", title: "Enforce external scratchpad / serial ledger write-backs in CLAUDE.md", desc: "Ensure multi-step coding or research plans are written to external state files (like investigation_steps.md or your serial ledger) rather than accumulated inside the prompt window." },
+      { id: "chk-3", category: "Clash Prevention", title: "Remove duplicated numeric thresholds from prose system prompts", desc: "Audit CLAUDE.md and runtime prompt strings for hard-coded numbers (USD notional caps, expectancy floors, refractory timers) that duplicate trade-guard.js or C++ sidecar constants." },
+      { id: "chk-4", category: "Select & Filter", title: "Pass pre-computed gate objects instead of raw histories", desc: "Feed the LLM compact boolean/numeric gate outputs from trade-guard.js and profit-keeper.js rather than raw historical bar arrays or verbose log dumps." },
+      { id: "chk-5", category: "Select & Filter", title: "Include explicit known-false-positive / noise rules", desc: "Following the video's LogLook pattern [00:06:00], pass a compact list of known benign alerts or market noise patterns so the agent does not over-trigger." },
+      { id: "chk-6", category: "Compress", title: "Cap raw event history at the last 5 items + 3-line loss-aware recap", desc: "Replace unbounded multi-turn message arrays with a rolling 3-line session summary plus at most the last 5 raw verified events [00:08:25]." },
+      { id: "chk-7", category: "Isolate & Tool Gating", title: "Filter tool definitions dynamically by state-machine phase", desc: "Strip unused MCP or execution tool schemas from the context stack when the agent is in a read-only, research, or refractory-cooldown state [00:04:13]." },
+      { id: "chk-8", category: "Isolate & Sub-Agents", title: "Separate Reader, Scorer, and Writer responsibilities", desc: "Ensure raw log/market feature extraction (Reader) is isolated from policy scoring (trade-guard.js / Scorer) and final digest generation (Writer) [00:09:00]." },
+      { id: "chk-9", category: "Instructions & Guardrails", title: "Add explicit missing-data fallback instructions", desc: "Instruct the agent: 'Only use provided context; if required reconciliation or file data is missing, halt and request the exact file path or state key' [00:05:25]." },
+      { id: "chk-10", category: "Output Format", title: "Lock all runtime agent responses to a strict JSON schema", desc: "Enforce structured JSON input and output schemas [00:06:20] with deterministic schema validation before any downstream service consumes the response." }
+    ];
+
+    const transcriptData = [
+      ["00:00:04", 4, "most people try to fix bad AI answers by writing bigger prompts that's a wrong move if you have been"],
+      ["00:00:12", 12, "padding prompts like an essay to make your model give you better answers then stick around in a few minutes"],
+      ["00:00:18", 18, "you'll learn how to use context engineering in a simple way to make your AI systems smarter and way more"],
+      ["00:00:26", 26, "reliable by the end of this video you'll know exactly what context engineering is why it's different from just prompting"],
+      ["00:00:33", 33, "and a step-by-step way to use it on real projects we'll road test it on a tiny but realistic agent"],
+      ["00:00:41", 41, "show you where context usually fall apart and give you a checklist on how to fix them really fast context"],
+      ["00:00:47", 47, "engineering is the craft of deciding exactly what the model should see and what it shouldn't at each step it"],
+      ["00:00:56", 56, "includes your system message tools retrieved facts short-term notes long-term memories format rules and also recent history if prompt engineering"],
+      ["00:01:09", 69, "is how you word the ask then context engineering is everything you feed the model so it can actually do"],
+      ["00:01:17", 77, "the job this is a huge shift that AI teams across the industry are calling out where we are moving"],
+      ["00:01:24", 84, "from perfect prompts to curating the smallest set of high signal tokens that steer the behavior of your model into"],
+      ["00:01:33", 93, "the right direction especially in agents that run for many turns and use tools so now context is being treated"],
+      ["00:01:41", 101, "like a scarce working memory and AI developers are looking at it differently why does this matter so models keep"],
+      ["00:01:50", 110, "getting larger context windows but longer context isn't always better when you fill up that window accuracy often drops because"],
+      ["00:02:01", 121, "errors sneak in and the model gets distracted by stale or irrelevant text or two pieces of context which actually"],
+      ["00:02:09", 129, "quietly contradict each other this shows up most in agents where the conversation and tools output snowballs so you'll see"],
+      ["00:02:19", 139, "four common failure modes in the wild first off we have poisoning where a hallucinated fact gets into context and"],
+      ["00:02:28", 148, "is reused over and over again second we have something called distraction where the model fixates on a huge history"],
+      ["00:02:36", 156, "instead of making a fresh plan third is confusion where extra unrelated details nudge it into the wrong answer and"],
+      ["00:02:45", 165, "fourth is clash where two sources disagree and the model picks the wrong one so why am I mentioning this"],
+      ["00:02:53", 173, "because knowing these names can help you fix what is wrong next we need to talk about what the difference"],
+      ["00:03:00", 180, "is between context engineering versus prompt engineering so prompt engineering is how you write and structure instructions examples and constraints"],
+      ["00:03:11", 191, "it's still very relevant and useful but context engineering is how you assemble everything that the model will see at"],
+      ["00:03:19", 199, "runtime like the right tools the right facts the right history and the right format it's dynamic and happens before"],
+      ["00:03:27", 207, "every model call so it's pretty powerful think of the model like a brain with a limited short-term memory your"],
+      ["00:03:35", 215, "job is to pack it with all the things that it needs for the next step and you have limited"],
+      ["00:03:40", 220, "space to do so here is what is in a context stack currently for most models that we use there"],
+      ["00:03:47", 227, "are seven pieces involved first we have instructions which are the system prompt and guardrails clear and plain language wins"],
+      ["00:03:57", 237, "here second we have user input which is the current ask from the user third we have retrieved facts which"],
+      ["00:04:04", 244, "are the few snippets that matter the most fourth we have tools which are functions that the model can call"],
+      ["00:04:13", 253, "as well as their descriptions which are part of the context fifth we have short-term notes which summarizes all the"],
+      ["00:04:20", 260, "recent steps so that the model remembers what has changed recently sixth we have long-term memory which contains stable facts"],
+      ["00:04:30", 270, "about the user or project selected on demand and lastly we have output format which are schemas or examples that"],
+      ["00:04:39", 279, "lock the shape of the answer now let's dive into a single example let's build a simple agent called log"],
+      ["00:04:47", 287, "look which is a helper that triages security alerts when they occur and drafts a one paragraph summary of the"],
+      ["00:04:57", 297, "alert plus a severity score of how severe the alert is the chatbot way is to say 'Hey here you"],
+      ["00:05:05", 305, "go analyze today's logs and tell me what's wrong.' It might actually just spit out random guesses at that point"],
+      ["00:05:11", 311, "but with context engineering we feed log look our agent a clean plate of the following things first we give"],
+      ["00:05:19", 319, "system instructions like summarize incidents into one paragraph plus a severity score between 0 and four only use provided context"],
+      ["00:05:30", 330, "and if missing data exist ask for a specific file path second we will list tools that it requires in"],
+      ["00:05:38", 338, "order to answer the questions that we ask it so for example reading file or GP or get known false"],
+      ["00:05:47", 347, "positives third we provide retrieved facts which only contain today's log slice and only lines with error or critical from"],
+      ["00:05:57", 357, "the last hour will be sent to our agent and also the team's false positive list for noisy alerts is"],
+      ["00:06:05", 365, "something that we will also flag to our agent the fourth thing that we're going to be passing to our"],
+      ["00:06:10", 370, "agent is short-term nodes so we've already checked this file next scan this log instead and then we're also going"],
+      ["00:06:20", 380, "to be giving it a format we wanted it to expect JSON formats input and output so that's the difference"],
+      ["00:06:28", 388, "same model but with way better context now let's talk about the four steps of context engineering these show up"],
+      ["00:06:36", 396, "across the best agent systems and they're really simple to remember write select compress and isolate first we have write"],
+      ["00:06:47", 407, "which means to save notes outside of the context window this actually lets the agent keep a scratch pad which"],
+      ["00:06:54", 414, "contains plans intermediate results and open questions it also makes sure that we don't squeeze all of that into the"],
+      ["00:07:03", 423, "next call but instead keep it external and only pull from it when it's relevant this keeps the working context"],
+      ["00:07:11", 431, "clean while preserving memory so for our agent log look we can store all of that into something called investigation"],
+      ["00:07:20", 440, "steps.mmd which will contain a bulleted list of what's been checked second step is select which means pull only what"],
+      ["00:07:30", 450, "matters right now so use retrieval to fetch just the log slices and policy lines needed for this turn hybrid"],
+      ["00:07:38", 458, "retrieval which contains both keyword and semantics often beats embedding only search on messy logs the point is selection and"],
+      ["00:07:48", 468, "not hoarding so for our agent log look we'll be selecting the top end number of error burst and the"],
+      ["00:07:56", 476, "specific section on severity scoring from our runbook at the third step we have compress which means keep the signal"],
+      ["00:08:05", 485, "but drop the rest what we need to do is periodically summarize long histories into short lossaware notes and then"],
+      ["00:08:14", 494, "continue with a fresh window so this keeps the last few raw items for safety but then it also beats"],
+      ["00:08:22", 502, "dragging a huge chat history everywhere so for log look we'll be keeping the last five findings but everything older"],
+      ["00:08:31", 511, "will be rolled into a threeline recap the fourth and final step is isolate which means sandbox sources to avoid"],
+      ["00:08:39", 519, "cross talk we can do this by splitting big jobs into sub agents or phases each explores its own context"],
+      ["00:08:48", 528, "and then returns a short digest to a coordinator this reduces leakage between tools and prevents one noisy source from"],
+      ["00:08:57", 537, "poisoning the rest so for our agent log look a reader sub agent just extracts the facts and then a"],
+      ["00:09:05", 545, "scorer sub agent applies the policy while a writer sub agent composes the final summary from their digest if you"],
+      ["00:09:13", 553, "remember one thing from all of this it's really important to curate instead of dumping a large chunk of prompts"],
+      ["00:09:22", 562, "context engineering isn't just a buzzword it's the natural progression of prompt engineering it's a discipline of building robust reliable"],
+      ["00:09:31", 571, "and truly useful applications it's how we move from simple chat bots to complex AI agents that can become our"],
+      ["00:09:39", 579, "collaborators hope you found this video helpful and hope you've learned how context engineering actually works and how it differs"],
+      ["00:09:47", 587, "from something like prompt engineering"],
+      ["00:09:56", 596, "bye-bye"]
+    ];
+
+    let currentStackIdx = 0;
+    let currentPipelineIdx = 0;
+    let simMode = "engineered";
+    const STORAGE_KEY = "bot_trade_context_checklist_v1";
+
+    function switchTab(tabId, btnEl) {
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      const panel = document.getElementById("tab-" + tabId);
+      if (panel) panel.classList.add("active");
+      if (btnEl) btnEl.classList.add("active");
+    }
+
+    function toggleTheme() {
+      const root = document.documentElement;
+      const current = root.getAttribute("data-theme");
+      root.setAttribute("data-theme", current === "light" ? "dark" : "light");
+    }
+
+    function downloadSelfHtml() {
+      const htmlString = "<!DOCTYPE html>" + String.fromCharCode(10) + document.documentElement.outerHTML;
+      const blob = new Blob([htmlString], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "bot-trade-context-engineering-v1.1.html";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function renderStack() {
+      const listEl = document.getElementById("stackList");
+      listEl.innerHTML = stackLayers.map((layer, idx) => `
+        <div class="stack-item ${idx === currentStackIdx ? 'active' : ''}" onclick="selectStack(${idx})">
+          <div><strong>${layer.num}. ${layer.name}</strong></div>
+          <span class="badge badge-secondary">${layer.time}</span>
+        </div>
+      `).join("");
+
+      const active = stackLayers[currentStackIdx];
+      document.getElementById("stackDetail").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem;">
+          <h3 style="margin:0;">Layer ${active.num}: ${active.name}</h3>
+          <span class="badge badge-amber">Timestamp ${active.time}</span>
+        </div>
+        <p style="margin-bottom:0.75rem;"><strong>Video Principle:</strong> ${active.videoRule}</p>
+        <p style="margin-bottom:0.75rem;"><strong>Target Surface in <code>bot-trade</code>:</strong> <code>${active.botTradeTarget}</code></p>
+        <div style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid var(--accent-positive); padding: 0.75rem 1rem; border-radius: 0 0.4rem 0.4rem 0;">
+          <strong>Diagnostic Upgrade:</strong> ${active.diagnosticFix}
+        </div>
+      `;
+    }
+
+    function selectStack(idx) {
+      currentStackIdx = idx;
+      renderStack();
+    }
+
+    function renderPipeline() {
+      const trackEl = document.getElementById("pipelineTrack");
+      trackEl.innerHTML = pipelineNodes.map((n, idx) => {
+        const isActive = idx === currentPipelineIdx;
+        const activeClass = isActive ? (simMode === "engineered" ? "active" : "unengineered-active") : "";
+        return `
+          <div class="node-card ${activeClass}" onclick="selectPipelineNode(${idx})">
+            <span class="node-step">${n.step}</span>
+            <div class="node-title">${n.title}</div>
+            <div class="node-module">${n.module}</div>
+          </div>
+        `;
+      }).join("");
+
+      document.getElementById("stepIndicator").textContent = `Stage ${currentPipelineIdx + 1} / ${pipelineNodes.length}`;
+      document.getElementById("btnEngineered").className = simMode === "engineered" ? "btn btn-primary" : "btn";
+      document.getElementById("btnUnengineered").className = simMode === "unengineered" ? "btn btn-primary" : "btn";
+
+      const node = pipelineNodes[currentPipelineIdx];
+      const isEng = simMode === "engineered";
+
+      document.getElementById("pipelineInspector").innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+          <div>
+            <span class="badge ${node.badgeClass}" style="margin-bottom:0.4rem;">${node.step}</span>
+            <h3 style="margin:0; font-size:1.15rem;">${node.title} (<code>${node.module}</code>)</h3>
+          </div>
+          <span class="badge badge-coral">Prevents: ${node.prevents}</span>
+        </div>
+        <p style="margin-bottom:0.85rem;"><strong>Core Purpose:</strong> ${node.summary}</p>
+        <div style="padding:0.85rem 1rem; border-radius:0.5rem; margin-bottom:0.85rem; background: ${isEng ? 'rgba(56, 189, 248, 0.08)' : 'rgba(248, 113, 113, 0.08)'}; border-left: 4px solid ${isEng ? 'var(--accent-positive)' : 'var(--accent-coral)'};">
+          <strong>${isEng ? 'Engineered Context Behaviour (Active):' : 'Unengineered Failure Mode Symptom (Active):'}</strong>
+          ${isEng ? node.engineeredDesc : node.unengineeredDesc}
+        </div>
+        <div>
+          <strong style="font-size:0.85rem; color:var(--text-muted); text-transform:uppercase;">
+            ${isEng ? 'Engineered Runtime Context Payload:' : 'Unengineered Monolithic Prompt Payload (Anti-Pattern):'}
+          </strong>
+          <pre>${escapeHtml(isEng ? node.engineeredPayload : node.unengineeredPayload)}</pre>
+        </div>
+      `;
+    }
+
+    function selectPipelineNode(idx) {
+      currentPipelineIdx = idx;
+      renderPipeline();
+    }
+
+    function stepPipeline(delta) {
+      currentPipelineIdx = (currentPipelineIdx + delta + pipelineNodes.length) % pipelineNodes.length;
+      renderPipeline();
+    }
+
+    function setSimMode(mode) {
+      simMode = mode;
+      renderPipeline();
+    }
+
+    function getSavedChecks() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+      catch (e) { return {}; }
+    }
+
+    function saveChecks(state) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+      catch (e) {}
+    }
+
+    function renderChecklist() {
+      const saved = getSavedChecks();
+      const container = document.getElementById("checklistContainer");
+      let completedCount = 0;
+
+      container.innerHTML = checklistItems.map((item, idx) => {
+        const isChecked = !!saved[item.id];
+        if (isChecked) completedCount++;
+        return `
+          <label class="check-item ${isChecked ? 'checked' : ''}" for="${item.id}">
+            <input type="checkbox" id="${item.id}" ${isChecked ? 'checked' : ''} onchange="toggleCheck('${item.id}', this.checked)">
+            <div>
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.2rem;">
+                <span class="badge badge-blue">${item.category}</span>
+                <strong>${idx + 1}. ${item.title}</strong>
+              </div>
+              <div style="font-size:0.88rem; color:var(--text-secondary);">${item.desc}</div>
+            </div>
+          </label>
+        `;
+      }).join("");
+
+      const pct = Math.round((completedCount / checklistItems.length) * 100);
+      document.getElementById("checklistProgress").style.width = pct + "%";
+      document.getElementById("checklistScoreBadge").textContent = `${completedCount} / ${checklistItems.length} Completed (${pct}%)`;
+    }
+
+    function toggleCheck(id, checked) {
+      const saved = getSavedChecks();
+      saved[id] = checked;
+      saveChecks(saved);
+      renderChecklist();
+    }
+
+    function resetChecklist() {
+      saveChecks({});
+      renderChecklist();
+      const status = document.getElementById("copyStatus");
+      status.textContent = "Checklist reset.";
+      setTimeout(() => { status.textContent = ""; }, 2500);
+    }
+
+    function copyChecklistMarkdown() {
+      const saved = getSavedChecks();
+      const lines = [
+        "# Context Engineering Audit Checklist - ang-kl/bot-trade",
+        "Provenance: Version 1.1 - 17 October 2026",
+        ""
+      ];
+      checklistItems.forEach((item, idx) => {
+        const mark = saved[item.id] ? "[x]" : "[ ]";
+        lines.push(`- ${mark} **${idx + 1}. [${item.category}] ${item.title}** - ${item.desc}`);
+      });
+      const newlineChar = String.fromCharCode(10);
+      navigator.clipboard.writeText(lines.join(newlineChar)).then(() => {
+        const status = document.getElementById("copyStatus");
+        status.textContent = "Copied Markdown report to clipboard!";
+        setTimeout(() => { status.textContent = ""; }, 3000);
+      });
+    }
+
+    function renderTranscript(filterText = "") {
+      const container = document.getElementById("transcriptContainer");
+      const q = filterText.trim().toLowerCase();
+      const filtered = transcriptData.filter(([ts, sec, text]) => {
+        if (!q) return true;
+        return ts.toLowerCase().includes(q) || text.toLowerCase().includes(q);
+      });
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div style="padding:1rem; color:var(--text-muted);">No matching transcript segments found.</div>`;
+        return;
+      }
+
+      container.innerHTML = filtered.map(([ts, sec, text]) => `
+        <div class="transcript-row">
+          <a class="ts-pill" href="https://www.youtube.com/watch?v=BBPQYtR7oUk&t=${sec}s" target="_blank" rel="noopener" title="Open video at ${ts}">[${ts}]</a>
+          <div>${escapeHtml(text)}</div>
+        </div>
+      `).join("");
+    }
+
+    function filterTranscript() {
+      const q = document.getElementById("transcriptSearch").value;
+      renderTranscript(q);
+    }
+
+    renderStack();
+    renderPipeline();
+    renderChecklist();
+    renderTranscript();
+  </script>
+</body>
+</html>
