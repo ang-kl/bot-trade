@@ -19,6 +19,7 @@ import { getState, setState } from '../db.js'
 // capabilitiesFor is a PURE preset table with no imports of its own, so
 // importing it here cannot create a cycle back through this module.
 import { capabilitiesFor, SETTABLE_MODES, enabledForMode, archiveAccount } from './account-capabilities.js'
+import { runAccountEnableHook } from './account-enable-hook.js'
 
 const now = () => new Date().toISOString()
 
@@ -123,6 +124,9 @@ export function syncSelectedAccount(db, accountId, isLive, traderLogin = null, {
   // owner set.
   db.prepare(`UPDATE accounts SET enabled = 1, mode = 'active', is_live = ?, updated_at = ? WHERE account_id = ?`)
     .run(isLive ? 1 : 0, now(), String(accountId))
+  // Claude · № 15,286 17-Oct (audit finding A): an enable applies the declared
+  // strategy policy now, not at the next boot. Seed-once: no-op when seeded.
+  runAccountEnableHook(db, `selected ${accountId}`)
 }
 
 /**
@@ -158,6 +162,8 @@ export function setAccountEnabled(db, accountId, enabled, mode = null) {
   // `enabled` is derived, never passed in — see enabledForMode.
   db.prepare('UPDATE accounts SET enabled = ?, mode = ?, updated_at = ? WHERE account_id = ?')
     .run(enabledForMode(m) ? 1 : 0, m, now(), id)
+  // Claude · № 15,286 17-Oct (audit finding A; Codex P1 on #1392).
+  if (enabledForMode(m)) runAccountEnableHook(db, `registry enable ${id}`)
   return { ok: true, accountId: id, enabled: enabledForMode(m), mode: m, isLive: row.is_live === 1 }
 }
 

@@ -37,6 +37,7 @@
 // `mode` stays the user-facing preset; the capabilities are what the engine
 // asks. Nothing here reads or writes trading state — it answers questions.
 import { listAccounts } from './account-registry.js'
+import { runAccountEnableHook } from './account-enable-hook.js'
 
 export const MODES = ['active', 'manage_only', 'paused', 'archived', 'registered']
 
@@ -371,6 +372,9 @@ export function unarchiveAccount(db, accountId, mode = 'manage_only') {
   // leaving it 0 now would recreate the very pair this file forbids.
   db.prepare('UPDATE accounts SET mode = ?, enabled = ?, updated_at = ? WHERE account_id = ?')
     .run(mode, enabledForMode(mode) ? 1 : 0, new Date().toISOString(), id)
+  // Claude · № 15,286 17-Oct (audit finding A): an unarchive that enables the
+  // account applies the declared strategy policy now (seed-once).
+  if (enabledForMode(mode)) runAccountEnableHook(db, `unarchive ${id}`)
   return { ok: true, accountId: id, mode, enabled: enabledForMode(mode) }
 }
 
