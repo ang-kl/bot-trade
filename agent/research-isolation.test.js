@@ -600,6 +600,12 @@ test('the boundary script passes a differing protected path only when the PR bod
   git('commit', '-q', '--amend', '-m', 'change loop\n\nProtected-change-authorised: agent/loop.js (owner, test)')
   const fromCommit = spawnSync('bash', ['scripts/check-protected-boundary.sh', 'main'], { cwd: dir, env: { ...process.env, PROTECTED_AUTHORISED: undefined }, encoding: 'utf8' })
   assert.equal(fromCommit.status, 0, fromCommit.stdout + fromCommit.stderr)
+  // Claude · № 15,284 17-Oct (audit finding B; Codex P1 on #1383). In CI the
+  // variable is always SET; an empty PR body authorises nothing, even with a
+  // marker in the commit message (the audit's boundary-empty-body probe).
+  const emptyBody = run({ PROTECTED_AUTHORISED: '' })
+  assert.equal(emptyBody.status, 1, 'RED before: an empty PR body fell back to the commit-message marker — ' + emptyBody.stdout + emptyBody.stderr)
+  assert.match(emptyBody.stdout, /FAIL[\s\S]*agent\/loop\.js/)
 })
 
 test('the CI boundary job hands the PR body to the script as an environment variable, not a shell interpolation, and runs when the body is edited', () => {
