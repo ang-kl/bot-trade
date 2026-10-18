@@ -322,3 +322,102 @@ test('#84: the scorer passes its timeframe — a horizon ending in a gap closes 
   assert.equal(row.outcome, 'time_cap', 'RED without the timeframe: two bars a gap apart read ambiguous')
   assert.equal(row.r_reached, 0.4, 'priced at the 50h open, 1.102')
 })
+
+// Claude · № 15,451 17-Oct (#85, Codex round 4 on #1404; owner "Build #85 and
+// #86"; claude-builder). A horizon that expires while the market is shut: the
+// read ends at the expiry, holds no bar at or after it, and the row read
+// `truncated`. The scorer now reads once more past the expiry. The fetcher
+// honours its count and end time like the loop's pmFetch; the closure and
+// the reopen price are self-derived.
+const H85 = 3600_000
+function closedMarketFetch({ closeFrom, closeTo, reopenOpen = 1.102, calls = [], failSecond = false } = {}) {
+  return async (symbol, tf, count, endMs) => {
+    calls.push({ count, endMs })
+    if (failSecond && calls.length > 1) throw new Error('trendbars timeout')
+    const out = []
+    const last = Math.floor(endMs / H85) * H85
+    for (let t = last - (count - 1) * H85; t <= last; t += H85) {
+      if (t >= closeFrom && t < closeTo) continue
+      out.push(t === closeTo ? bar(t, reopenOpen, reopenOpen + 0.0005, reopenOpen - 0.0005, reopenOpen) : bar(t, 1.1, 1.101, 1.099, 1.1))
+    }
+    return out
+  }
+}
+
+test('#85: a horizon expiring in a closed market is read past the expiry and closes at the reopening open', async () => {
+  const db = initDB(':memory:')
+  refuse(db, { symbol: 'EURUSD', at: T0 })
+  const calls = []
+  // Expiry T0+48h; the market is shut from T0+45h to T0+51h.
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + 45 * H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED before: truncated — the read ended at the expiry')
+  assert.equal(row.r_reached, 0.4, 'priced at the reopening open, 1.102')
+  assert.equal(row.exit_at, iso(T0 + 51 * H85), 'at the first bar after the expiry')
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[1], { count: 77, endMs: T0 + 48 * H85 + 3 * 86_400_000 }, 'three days past the expiry, 72 bars + 5')
+})
+
+test('#85: the second read happens only when the first ended before the expiry', async () => {
+  const db = initDB(':memory:')
+  refuse(db, { symbol: 'EURUSD', at: T0 })
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + 60 * H85, closeTo: T0 + 70 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap'); assert.equal(row.r_reached, 0, 'the bar opening at the expiry, 1.1')
+  assert.equal(calls.length, 1, 'no extra read when the window already holds the expiry')
+})
+
+test('#85: a failed read past the expiry keeps truncated and names the failure', async () => {
+  const db = initDB(':memory:')
+  refuse(db, { symbol: 'EURUSD', at: T0 })
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + 45 * H85, closeTo: T0 + 51 * H85, calls, failSecond: true }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'truncated')
+  assert.match(row.note, /the read past the expiry failed: trendbars timeout/)
+})
+
+test('#85: the read past the expiry stops at now — a market still shut leaves the row truncated', async () => {
+  const db = initDB(':memory:')
+  refuse(db, { symbol: 'EURUSD', at: T0 })
+  const calls = []
+  // Scored at T0+49h, the market reopens at T0+51h: nothing after the expiry exists yet.
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + 45 * H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 49 * H85, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'truncated')
+  assert.equal(calls[1].endMs, T0 + 49 * H85, 'never asks for bars after now')
+})
+
+// Codex round 1 on #1406 (P2): a refusal inside the market's last bar before a
+// closure — that bar opens before the refusal, so the post-entry window is
+// empty — still needs the read past the expiry; it used to record no_bars.
+test('#85: a refusal in the last bar before a closure is read past the expiry, not recorded no_bars', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + 30 * 60_000                       // inside the T0 bar; the closure starts at T0+1h
+  refuse(db, { symbol: 'EURUSD', at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED before: no_bars — the empty window skipped the second read')
+  assert.equal(row.r_reached, 0.4)
+  assert.equal(calls.length, 2)
+})
+
+// Codex round 2 on #1406 (P2): a refusal stamped exactly at the close of the
+// market's last bar before a closure. That bar ends at the refusal; it is the
+// previous interval boundary and must stay in the window, or the replay reads
+// the expiry as "inside the entry bar".
+test('#85: a refusal exactly at the last pre-closure bar\'s close is read past the expiry and closes at the reopen', async () => {
+  const db = initDB(':memory:')
+  const at = T0 + H85                               // the T0 bar closes at T0+1h; the closure starts there
+  refuse(db, { symbol: 'EURUSD', at })
+  db.prepare('UPDATE risk_events SET created_at = ?').run(iso(at).replace('T', ' ').slice(0, 19))
+  const calls = []
+  await scoreRefusedOpportunities(db, closedMarketFetch({ closeFrom: T0 + H85, closeTo: T0 + 51 * H85, calls }), { nowMs: T0 + 5 * 86_400_000, maxPerCycle: 10 })
+  const row = db.prepare('SELECT * FROM refusal_scores').get()
+  assert.equal(row.outcome, 'time_cap', 'RED before: ambiguous — the bar ending at the refusal was dropped')
+  assert.equal(row.r_reached, 0.4)
+  assert.equal(calls.length, 2)
+})

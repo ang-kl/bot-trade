@@ -516,3 +516,69 @@ test('W16: the sweep and the pending list apply the same exemption', async () =>
   assert.equal(p?.state, 'ineligible')
   assert.match(p.note, /closed exactly flat/)
 })
+
+// Claude · № 15,451 17-Oct (#85, Codex round 4 on #1404; claude-builder): the
+// re-score pass's window kept bars up to each expiry only, so an expiry in a
+// closed market read `truncated`. Its read now reaches past the latest expiry
+// and each window keeps the first bar after its own. Self-derived closure.
+test('#85: the re-score pass closes an expiry in a closed market at the reopening open', async () => {
+  const db = fresh()
+  noBarsRow(db, { key: 'shut', firstMs: T0 })           // horizon 2880 min: expiry T0+48h
+  const calls = []
+  const closedFetch = async (symbol, tf, count, endMs) => {
+    calls.push({ count, endMs })
+    const bars = []
+    const last = Math.floor(endMs / HOUR) * HOUR
+    for (let t = last - (count - 1) * HOUR; t <= last; t += HOUR) {
+      if (t >= T0 + 45 * HOUR && t < T0 + 51 * HOUR) continue   // the market is shut across the expiry
+      bars.push(t === T0 + 51 * HOUR ? [t, 1.102, 1.1025, 1.1015, 1.102] : [t, 1.1, 1.101, 1.099, 1.1])
+    }
+    return decodeTrendbars(payload(bars))
+  }
+  await rescoreNoBarsRefusals(db, closedFetch, { nowMs: NOW, maxFetches: 1 })
+  const r = scoreOf(db, 'shut')
+  assert.equal(r.outcome, 'time_cap', 'RED before: truncated — the window stopped at the expiry')
+  assert.equal(r.r_reached, 0.4, 'the reopening open, 1.102')
+  assert.equal(calls.length, 1, 'still one read for the group')
+  assert.equal(calls[0].endMs, T0 + 48 * HOUR + 72 * HOUR, 'the read reaches three days past the latest expiry')
+})
+
+// Codex round 1 on #1406 (P2), re-score side: a refusal inside the last bar
+// before a closure — that bar opens before the refusal — keeps that bar in its
+// window, so the replay knows the expiry fell after it closed.
+test('#85: the re-score pass closes a refusal made in the last bar before a closure at the reopening open', async () => {
+  const db = fresh()
+  noBarsRow(db, { key: 'edge', firstMs: T0 + 30 * 60_000 })   // expiry T0+48.5h; closure T0+1h .. T0+51h
+  const closedFetch = async (symbol, tf, count, endMs) => {
+    const bars = []
+    const last = Math.floor(endMs / HOUR) * HOUR
+    for (let t = last - (count - 1) * HOUR; t <= last; t += HOUR) {
+      if (t >= T0 + HOUR && t < T0 + 51 * HOUR) continue
+      bars.push(t === T0 + 51 * HOUR ? [t, 1.102, 1.1025, 1.1015, 1.102] : [t, 1.1, 1.101, 1.099, 1.1])
+    }
+    return decodeTrendbars(payload(bars))
+  }
+  await rescoreNoBarsRefusals(db, closedFetch, { nowMs: NOW, maxFetches: 1 })
+  const r = scoreOf(db, 'edge')
+  assert.equal(r.outcome, 'time_cap', 'RED before: ambiguous — the refusal bar was dropped from the window')
+  assert.equal(r.r_reached, 0.4)
+})
+
+// Codex round 2 on #1406 (P2), re-score side: the same exact-close refusal.
+test('#85: the re-score pass keeps the bar ending exactly at the refusal and closes at the reopen', async () => {
+  const db = fresh()
+  noBarsRow(db, { key: 'exact', firstMs: T0 + HOUR })   // expiry T0+49h; closure T0+1h .. T0+51h
+  const closedFetch = async (symbol, tf, count, endMs) => {
+    const bars = []
+    const last = Math.floor(endMs / HOUR) * HOUR
+    for (let t = last - (count - 1) * HOUR; t <= last; t += HOUR) {
+      if (t >= T0 + HOUR && t < T0 + 51 * HOUR) continue
+      bars.push(t === T0 + 51 * HOUR ? [t, 1.102, 1.1025, 1.1015, 1.102] : [t, 1.1, 1.101, 1.099, 1.1])
+    }
+    return decodeTrendbars(payload(bars))
+  }
+  await rescoreNoBarsRefusals(db, closedFetch, { nowMs: NOW, maxFetches: 1 })
+  const r = scoreOf(db, 'exact')
+  assert.equal(r.outcome, 'time_cap', 'RED before: ambiguous')
+  assert.equal(r.r_reached, 0.4)
+})

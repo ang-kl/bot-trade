@@ -46,6 +46,25 @@ export function horizonMinFor(tf) {
 
 const num = (v) => { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
 
+// Claude · № 15,451 17-Oct (#85, Codex round 4 on #1404; owner "Build #85 and
+// #86"; claude-builder). A horizon that expires while the market is shut has
+// no bar at or after its expiry inside a read that ENDS at the expiry, so the
+// replay's gap rule (exit at the first open after it, #1404) never sees the
+// open it needs and the row reads `truncated`. How far past the expiry a
+// second read looks: three days (a weekend plus a holiday), never more than
+// the fetcher's 400-bar read, never less than one bar. On 1m bars that is 400
+// minutes, so a Friday-close expiry on 1m stays truncated (said, not hidden).
+const DAY_MS = 86_400_000
+export function readPastExpiryMs(tfMs) {
+  return Math.max(tfMs, Math.min(3 * DAY_MS, 400 * tfMs))
+}
+// Bars from two reads, one per bar time, oldest first.
+function mergeBars(a, b) {
+  const byT = new Map()
+  for (const bar of [...a, ...b]) { const t = Number(bar?.[0]); if (Number.isFinite(t) && !byT.has(t)) byT.set(t, bar) }
+  return [...byT.values()].sort((x, y) => Number(x[0]) - Number(y[0]))
+}
+
 /**
  * Refused opportunities whose horizon has elapsed and that have no score.
  * One row per opportunity_key: the first refusal's proposal levels, the
@@ -271,15 +290,43 @@ export async function scoreRefusedOpportunities(db, fetchBars, { nowMs = Date.no
     } catch (err) {
       insertScore(db, it, { nowMs, outcome: 'fetch_failed', note: String(err?.message || err).slice(0, 200) }); failed++; continue
     }
-    const fetched = normaliseBars(bars) // V3 L2b W13: {t,o,h,l,c} → tuples
-    const window = fetched.filter(b => Number(b?.[0]) >= it.firstMs)
-    const r = replayExit(window, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs, barMs: tfMin * 60_000 }, { timeCapMin: it.horizonMin })
+    let fetched = normaliseBars(bars) // V3 L2b W13: {t,o,h,l,c} → tuples
+    const tfMs = tfMin * 60_000
+    const replayItem = (bs) => replayExit(bs, { side: it.side, entry: it.entry, sl: it.sl, tp: it.tp, openedAtMs: it.firstMs, barMs: tfMs }, { timeCapMin: it.horizonMin })
+    // The bar holding the refusal stays in the window: replayExit skips it and
+    // records its end, which tells an expiry in a closure after it from one
+    // inside it (#1404; Codex rounds 1–2 on #1406: a bar ending exactly at the
+    // refusal is kept too — it is the previous interval boundary).
+    const inWindow = (b) => Number(b?.[0]) + tfMs >= it.firstMs
+    let window = fetched.filter(inWindow)
+    let r = replayItem(window)
+    // #85: truncated, and the read's last bar closed at or before the expiry —
+    // the expiry fell in a closed market. ONE more read past it, merged by bar
+    // time; only this case pays for it.
+    let pastNote = null
+    const lastT = fetched.length ? Number(fetched[fetched.length - 1]?.[0]) : NaN
+    // Codex round 1 on #1406: the guard reads what was FETCHED, not the post-entry
+    // window — a refusal inside the market's last bar before a closure has an
+    // empty window (that bar opens before firstMs) and still needs the read.
+    if (!r.ok && !r.ambiguous && fetched.length && Number.isFinite(lastT) && lastT + tfMs <= endMs) {
+      const pastEnd = Math.min(nowMs, endMs + readPastExpiryMs(tfMs))
+      if (pastEnd > endMs) {
+        try {
+          const more = normaliseBars(await fetchBars(it.symbol, tf, Math.min(400, Math.ceil((pastEnd - endMs) / tfMs) + 5), pastEnd))
+          fetched = mergeBars(fetched, more)
+          window = fetched.filter(inWindow)
+          r = replayItem(window)
+        } catch (err) {
+          pastNote = `the read past the expiry failed: ${String(err?.message || err).slice(0, 150)}`
+        }
+      }
+    }
     if (r.ok) {
       insertScore(db, it, { nowMs, outcome: r.reason, rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
     } else if (r.ambiguous) {
       insertScore(db, it, { nowMs, outcome: 'ambiguous', barsUsed: r.barsUsed ?? null, note: r.reason })
     } else if (window.length) {
-      insertScore(db, it, { nowMs, outcome: 'truncated', barsUsed: window.length, note: r.reason })
+      insertScore(db, it, { nowMs, outcome: 'truncated', barsUsed: window.length, note: pastNote ? `${r.reason}; ${pastNote}` : r.reason })
     } else {
       // A no_bars this scorer writes names its own read, so the re-score pass
       // below can tell it from a row the bar-shape defect wrote (fix round).
@@ -456,9 +503,17 @@ export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(),
     const ends = items.filter(i => Number.isFinite(i.firstMs)).map(i => i.firstMs + i.horizonMin * 60_000)
     if (!ends.length) { settle(anchor.opportunity_key, 'unscorable', { detail: 'unreadable refusal time' }); continue }
     out.fetches++
+    // #85: the read also reaches past the latest expiry (as far as the scorer's
+    // second read would), leaving the anchor's whole window inside its 400 bars.
+    const tfMs = (tfMinutes(tf) ?? 60) * 60_000
+    const maxEnd = Math.max(...ends)
+    const anchorItem = items.find(i => i.row.opportunity_key === anchor.opportunity_key)
+    const anchorBars = Number.isFinite(anchorItem?.firstMs) ? Math.ceil((maxEnd - anchorItem.firstMs) / tfMs) : 0
+    const pastBars = Math.max(0, Math.min(Math.floor(readPastExpiryMs(tfMs) / tfMs), RESCORE_FETCH_BARS - anchorBars - 5))
+    const readEnd = Math.min(nowMs, maxEnd + pastBars * tfMs)
     let bars
     try {
-      bars = normaliseBars(await fetchBars(anchor.symbol, tf, RESCORE_FETCH_BARS, Math.max(...ends)))
+      bars = normaliseBars(await fetchBars(anchor.symbol, tf, RESCORE_FETCH_BARS, Math.max(maxEnd, readEnd)))
     } catch (err) {
       const msg = String(err?.message || err).slice(0, 200)
       if (SYMBOL_UNKNOWN_RE.test(msg)) {
@@ -486,8 +541,11 @@ export async function rescoreNoBarsRefusals(db, fetchBars, { nowMs = Date.now(),
         // scorer itself would.
         if (!isAnchor && !(Number.isFinite(firstBarMs) && firstBarMs <= it.firstMs)) continue
         const endMs = it.firstMs + it.horizonMin * 60_000
-        const window = bars.filter(b => Number(b?.[0]) >= it.firstMs && Number(b?.[0]) <= endMs)
-        const r = replayExit(window, { side: it.row.side, entry: num(it.row.entry), sl: num(it.row.sl), tp: num(it.row.tp), openedAtMs: it.firstMs, barMs: (tfMinutes(tf) ?? 60) * 60_000 }, { timeCapMin: it.horizonMin })
+        const window = bars.filter(b => Number(b?.[0]) + tfMs >= it.firstMs && Number(b?.[0]) <= endMs)
+        // #85: and the first bar after the expiry, for an expiry in a closed market.
+        const after = bars.find(b => Number(b?.[0]) > endMs)
+        if (after) window.push(after)
+        const r = replayExit(window, { side: it.row.side, entry: num(it.row.entry), sl: num(it.row.sl), tp: num(it.row.tp), openedAtMs: it.firstMs, barMs: tfMs }, { timeCapMin: it.horizonMin })
         if (r.ok) settle(key, r.reason, { rReached: r.rMultiple, exitAt: r.exitAtMs ? new Date(r.exitAtMs).toISOString() : null, barsUsed: r.barsUsed ?? null })
         else if (r.ambiguous) settle(key, 'ambiguous', { barsUsed: r.barsUsed ?? null, detail: r.reason })
         else settle(key, window.length ? 'truncated' : 'no_bars', { barsUsed: window.length, detail: r.reason })
